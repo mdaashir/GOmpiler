@@ -4,7 +4,6 @@ import (
 	"bufio"
 	"fmt"
 	"os"
-	"regexp"
 	"strings"
 	"unicode"
 )
@@ -106,17 +105,23 @@ func (l *Lexer) Lex() []Token {
 			// Handle Multi-line Comments
 			comment := "/*"
 			l.nextChar()
-			for !(l.peekChar() == '*' && l.input[l.position+1] == '/') && l.peekChar() != 0 {
+			for l.peekChar() != 0 {
+				if l.peekChar() == '*' && l.position+1 < len(l.input) && l.input[l.position+1] == '/' {
+					comment += "*/"
+					l.nextChar()
+					l.nextChar()
+					break
+				}
 				comment += string(l.nextChar())
 			}
-			comment += "*/"
-			l.nextChar()
-			l.nextChar()
 			tokens = append(tokens, Token{COMMENT, comment})
 		} else if ch == '"' {
 			// Handle String Literals
 			str := ""
 			for l.peekChar() != '"' && l.peekChar() != 0 {
+				if l.peekChar() == '\\' {
+					str += string(l.nextChar())
+				}
 				str += string(l.nextChar())
 			}
 			l.nextChar()
@@ -131,9 +136,9 @@ func (l *Lexer) Lex() []Token {
 			l.nextChar()
 			tokens = append(tokens, Token{CHAR, char})
 		} else if unicode.IsDigit(ch) || (ch == '.' && unicode.IsDigit(l.peekChar())) {
-			// Handle Numbers (including floats and scientific notation)
+			// Handle Numbers (integers, floats, hex, octal)
 			num := string(ch)
-			for unicode.IsDigit(l.peekChar()) || l.peekChar() == '.' || l.peekChar() == 'e' || l.peekChar() == 'E' {
+			for unicode.IsDigit(l.peekChar()) || l.peekChar() == '.' || l.peekChar() == 'e' || l.peekChar() == 'E' || l.peekChar() == 'x' || l.peekChar() == 'X' {
 				num += string(l.nextChar())
 			}
 			tokens = append(tokens, Token{NUMBER, num})
