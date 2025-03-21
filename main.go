@@ -34,6 +34,8 @@ func main() {
 
 	lexer := NewLexer(content.String())
 	tokens := lexer.Lex()
+	parser := NewParser(tokens)
+	parser.Parse()
 	outputFile, err := os.Create("tokens.txt")
 	if err != nil {
 		fmt.Println("Error creating output file:", err)
