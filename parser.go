@@ -1,8 +1,6 @@
 package main
 
-import (
-	"fmt"
-)
+import "fmt"
 
 type NodeType string
 
@@ -47,6 +45,7 @@ func (p *Parser) peekToken() Token {
 func (p *Parser) Parse() *ASTNode {
 	root := &ASTNode{Type: PROGRAM, Value: "Program"}
 	for p.current < len(p.tokens) {
+		fmt.Println("Parsing token:", p.tokens[p.current]) // Debug print
 		node := p.parseStatement()
 		if node != nil {
 			root.Children = append(root.Children, node)
@@ -58,39 +57,46 @@ func (p *Parser) Parse() *ASTNode {
 func (p *Parser) parseStatement() *ASTNode {
 	tok := p.peekToken()
 	switch tok.Type {
+	case PREPROCESSOR:
+		return p.parsePreprocessor()
 	case KEYWORD:
 		return p.parseKeyword()
 	case IDENTIFIER:
 		return p.parseExpression()
 	default:
+		// Consume the token to avoid infinite loops
+		fmt.Println("Skipping unhandled token:", tok)
+		p.nextToken()
 		return nil
 	}
+}
+func (p *Parser) parsePreprocessor() *ASTNode {
+	tok := p.nextToken()
+	node := &ASTNode{Type: STATEMENT, Value: tok.Value} // Change "PREPROCESSOR_NODE" to STATEMENT
+	return node
 }
 
 func (p *Parser) parseKeyword() *ASTNode {
 	tok := p.nextToken()
 	node := &ASTNode{Type: STATEMENT, Value: tok.Value}
+	if tok.Value == "return" {
+		expr := p.parseExpression()
+		if expr != nil { // Ensure return captures its value
+			node.Children = append(node.Children, expr)
+		}
+	}
 	return node
 }
 
 func (p *Parser) parseExpression() *ASTNode {
 	tok := p.nextToken()
 	node := &ASTNode{Type: EXPRESSION, Value: tok.Value}
-	if p.peekToken().Type == OPERATOR {
+	for p.peekToken().Type == OPERATOR {
 		op := p.nextToken()
 		right := p.parseExpression()
-		operatorNode := &ASTNode{Type: EXPRESSION, Value: op.Value, Children: []*ASTNode{node, right}}
-		return operatorNode
+		if right != nil { // Ensure right-hand expression exists
+			node = &ASTNode{Type: EXPRESSION, Value: op.Value, Children: []*ASTNode{node, right}}
+		}
 	}
 	return node
-}
-
-func (p *Parser) PrintAST(node *ASTNode, depth int) {
-	for i := 0; i < depth; i++ {
-		fmt.Print("  ")
-	}
-	fmt.Println(node.Type, ":", node.Value)
-	for _, child := range node.Children {
-		p.PrintAST(child, depth+1)
-	}
 }

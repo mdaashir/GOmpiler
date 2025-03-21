@@ -40,7 +40,7 @@ var multiCharOps = map[string]bool{
 	"==": true, "!=": true, "<=": true, ">=": true,
 	"&&": true, "||": true, "+=": true, "-=": true,
 	"*=": true, "/=": true, "%=": true, "<<": true,
-	">>": true,
+	">>": true, ">>=": true, "<<=": true, "->": true,
 }
 
 func isOperator(ch rune) bool {

@@ -34,18 +34,29 @@ func main() {
 
 	lexer := NewLexer(content.String())
 	tokens := lexer.Lex()
+	fmt.Println("Lexing Done, Token Count:", len(tokens))
 	parser := NewParser(tokens)
 	ast := parser.Parse()
-	outputFile, err := os.Create("ast.txt")
+	fmt.Println("Parsing Done")
+	astFile, err := os.Create("ast.txt")
 	if err != nil {
-		fmt.Println("Error creating output file:", err)
+		fmt.Println("Error creating AST file:", err)
 		os.Exit(1)
 	}
-	defer outputFile.Close()
-
-	writer := bufio.NewWriter(outputFile)
-	parser.PrintAST(ast, 0)
-	writer.Flush()
+	defer astFile.Close()
+	astWriter := bufio.NewWriter(astFile)
+	writeAST(ast, astWriter, 0)
+	astWriter.Flush()
 
 	fmt.Println("AST written to ast.txt")
+}
+
+func writeAST(node *ASTNode, writer *bufio.Writer, depth int) {
+	for i := 0; i < depth; i++ {
+		writer.WriteString("  ")
+	}
+	writer.WriteString(fmt.Sprintf("%s : %s\n", node.Type, node.Value))
+	for _, child := range node.Children {
+		writeAST(child, writer, depth+1)
+	}
 }
