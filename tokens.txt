@@ -1,0 +1,63 @@
+Type: PREPROCESSOR Value: #include
+Type: OPERATOR     Value: <
+Type: IDENTIFIER   Value: stdio
+Type: DOT          Value: .
+Type: IDENTIFIER   Value: h
+Type: OPERATOR     Value: >
+Type: COMMENT      Value: // This is a single-line comment
+Type: COMMENT      Value: /*
+   This is a
+   multi-line comment
+*/
+Type: KEYWORD      Value: int
+Type: IDENTIFIER   Value: main
+Type: BRACKET      Value: (
+Type: BRACKET      Value: )
+Type: BRACKET      Value: {
+Type: KEYWORD      Value: char
+Type: IDENTIFIER   Value: c
+Type: OPERATOR     Value: =
+Type: CHAR         Value: A
+Type: SEMICOLON    Value: ;
+Type: COMMENT      Value: // Character literal
+Type: KEYWORD      Value: char
+Type: IDENTIFIER   Value: str
+Type: BRACKET      Value: [
+Type: BRACKET      Value: ]
+Type: OPERATOR     Value: =
+Type: STRING       Value: Hello, World!
+Type: SEMICOLON    Value: ;
+Type: COMMENT      Value: // String literal
+Type: KEYWORD      Value: int
+Type: IDENTIFIER   Value: x
+Type: OPERATOR     Value: =
+Type: NUMBER       Value: 10
+Type: SEMICOLON    Value: ;
+Type: KEYWORD      Value: float
+Type: IDENTIFIER   Value: y
+Type: OPERATOR     Value: =
+Type: NUMBER       Value: 3.14
+Type: SEMICOLON    Value: ;
+Type: KEYWORD      Value: if
+Type: BRACKET      Value: (
+Type: IDENTIFIER   Value: x
+Type: OPERATOR     Value: >
+Type: NUMBER       Value: 5
+Type: OPERATOR     Value: &&
+Type: IDENTIFIER   Value: y
+Type: OPERATOR     Value: <
+Type: NUMBER       Value: 4.0
+Type: BRACKET      Value: )
+Type: BRACKET      Value: {
+Type: IDENTIFIER   Value: printf
+Type: BRACKET      Value: (
+Type: STRING       Value: %s\n
+Type: COMMA        Value: ,
+Type: IDENTIFIER   Value: str
+Type: BRACKET      Value: )
+Type: SEMICOLON    Value: ;
+Type: BRACKET      Value: }
+Type: KEYWORD      Value: return
+Type: NUMBER       Value: 0
+Type: SEMICOLON    Value: ;
+Type: BRACKET      Value: }
