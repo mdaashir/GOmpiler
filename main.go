@@ -1,7 +1,9 @@
 package main
 
 import (
+	"bufio"
 	"fmt"
+	"os"
 	"strings"
 	"unicode"
 )
@@ -72,6 +74,34 @@ func (l *Lexer) Lex() []Token {
 
 		if unicode.IsSpace(ch) {
 			continue
+		} else if ch == '/' && l.peekChar() == '/' {
+			comment := "//"
+			l.nextChar()
+			for l.peekChar() != '\n' && l.peekChar() != 0 {
+				comment += string(l.nextChar())
+			}
+			tokens = append(tokens, Token{COMMENT, comment})
+		} else if ch == '/' && l.peekChar() == '*' {
+			comment := "/*"
+			l.nextChar()
+			for !(l.peekChar() == '*' && l.input[l.position+1] == '/') && l.peekChar() != 0 {
+				comment += string(l.nextChar())
+			}
+			comment += "*/"
+			l.nextChar()
+			l.nextChar()
+			tokens = append(tokens, Token{COMMENT, comment})
+		} else if ch == '"' {
+			str := ""
+			for l.peekChar() != '"' && l.peekChar() != 0 {
+				str += string(l.nextChar())
+			}
+			l.nextChar()
+			tokens = append(tokens, Token{STRING, str})
+		} else if ch == '\'' {
+			char := string(l.nextChar())
+			l.nextChar()
+			tokens = append(tokens, Token{CHAR, char})
 		} else if unicode.IsLetter(ch) || ch == '_' {
 			identifier := string(ch)
 			for unicode.IsLetter(l.peekChar()) || unicode.IsDigit(l.peekChar()) || l.peekChar() == '_' {
@@ -102,8 +132,31 @@ func (l *Lexer) Lex() []Token {
 }
 
 func main() {
-	code := `int main() { int x = 10 + 5; return x; }`
-	lexer := NewLexer(code)
+	if len(os.Args) < 2 {
+		fmt.Println("Usage: go run lexer.go <filename>")
+		os.Exit(1)
+	}
+
+	filename := os.Args[1]
+	file, err := os.Open(filename)
+	if err != nil {
+		fmt.Println("Error reading file:", err)
+		os.Exit(1)
+	}
+	defer file.Close()
+
+	scanner := bufio.NewScanner(file)
+	var content string
+	for scanner.Scan() {
+		content += scanner.Text() + "\n"
+	}
+
+	if err := scanner.Err(); err != nil {
+		fmt.Println("Error scanning file:", err)
+		os.Exit(1)
+	}
+
+	lexer := NewLexer(content)
 	tokens := lexer.Lex()
 	for _, token := range tokens {
 		fmt.Printf("Type: %-10s Value: %s\n", token.Type, token.Value)
