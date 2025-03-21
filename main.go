@@ -35,8 +35,8 @@ func main() {
 	lexer := NewLexer(content.String())
 	tokens := lexer.Lex()
 	parser := NewParser(tokens)
-	parser.Parse()
-	outputFile, err := os.Create("tokens.txt")
+	ast := parser.Parse()
+	outputFile, err := os.Create("ast.txt")
 	if err != nil {
 		fmt.Println("Error creating output file:", err)
 		os.Exit(1)
@@ -44,10 +44,8 @@ func main() {
 	defer outputFile.Close()
 
 	writer := bufio.NewWriter(outputFile)
-	for _, token := range tokens {
-		fmt.Fprintf(writer, "Type: %-12s Value: %s\n", token.Type, token.Value)
-	}
+	parser.PrintAST(ast, 0)
 	writer.Flush()
 
-	fmt.Println("Tokens written to tokens.txt")
+	fmt.Println("AST written to ast.txt")
 }
