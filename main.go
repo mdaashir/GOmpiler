@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"fmt"
 	"os"
+	"regexp"
 	"strings"
 	"unicode"
 )
@@ -16,26 +17,38 @@ type Token struct {
 }
 
 const (
-	IDENTIFIER TokenType = "IDENTIFIER"
-	KEYWORD    TokenType = "KEYWORD"
-	NUMBER     TokenType = "NUMBER"
-	OPERATOR   TokenType = "OPERATOR"
-	STRING     TokenType = "STRING"
-	CHAR       TokenType = "CHAR"
-	BRACKET    TokenType = "BRACKET"
-	SEMICOLON  TokenType = "SEMICOLON"
-	COMMENT    TokenType = "COMMENT"
-	UNKNOWN    TokenType = "UNKNOWN"
+	IDENTIFIER   TokenType = "IDENTIFIER"
+	KEYWORD      TokenType = "KEYWORD"
+	NUMBER       TokenType = "NUMBER"
+	OPERATOR     TokenType = "OPERATOR"
+	STRING       TokenType = "STRING"
+	CHAR         TokenType = "CHAR"
+	BRACKET      TokenType = "BRACKET"
+	SEMICOLON    TokenType = "SEMICOLON"
+	COMMENT      TokenType = "COMMENT"
+	PREPROCESSOR TokenType = "PREPROCESSOR"
+	COMMA        TokenType = "COMMA"
+	DOT          TokenType = "DOT"
+	UNKNOWN      TokenType = "UNKNOWN"
 )
 
 var keywords = map[string]bool{
 	"int": true, "return": true, "if": true, "else": true,
 	"while": true, "for": true, "char": true, "float": true,
-	"double": true, "void": true, "struct": true,
+	"double": true, "void": true, "struct": true, "switch": true,
+	"case": true, "default": true, "typedef": true, "sizeof": true,
+	"break": true, "continue": true, "do": true, "enum": true,
+}
+
+var multiCharOps = map[string]bool{
+	"==": true, "!=": true, "<=": true, ">=": true,
+	"&&": true, "||": true, "+=": true, "-=": true,
+	"*=": true, "/=": true, "%=": true, "<<": true,
+	">>": true,
 }
 
 func isOperator(ch rune) bool {
-	return strings.ContainsRune("+-*/=<>!&|", ch)
+	return strings.ContainsRune("+-*/=<>!&|%^", ch)
 }
 
 func isBracket(ch rune) bool {
@@ -74,7 +87,15 @@ func (l *Lexer) Lex() []Token {
 
 		if unicode.IsSpace(ch) {
 			continue
+		} else if ch == '#' {
+			// Handle Preprocessor Directives
+			directive := "#"
+			for unicode.IsLetter(l.peekChar()) {
+				directive += string(l.nextChar())
+			}
+			tokens = append(tokens, Token{PREPROCESSOR, directive})
 		} else if ch == '/' && l.peekChar() == '/' {
+			// Handle Single-line Comments
 			comment := "//"
 			l.nextChar()
 			for l.peekChar() != '\n' && l.peekChar() != 0 {
@@ -82,6 +103,7 @@ func (l *Lexer) Lex() []Token {
 			}
 			tokens = append(tokens, Token{COMMENT, comment})
 		} else if ch == '/' && l.peekChar() == '*' {
+			// Handle Multi-line Comments
 			comment := "/*"
 			l.nextChar()
 			for !(l.peekChar() == '*' && l.input[l.position+1] == '/') && l.peekChar() != 0 {
@@ -92,6 +114,7 @@ func (l *Lexer) Lex() []Token {
 			l.nextChar()
 			tokens = append(tokens, Token{COMMENT, comment})
 		} else if ch == '"' {
+			// Handle String Literals
 			str := ""
 			for l.peekChar() != '"' && l.peekChar() != 0 {
 				str += string(l.nextChar())
@@ -99,31 +122,47 @@ func (l *Lexer) Lex() []Token {
 			l.nextChar()
 			tokens = append(tokens, Token{STRING, str})
 		} else if ch == '\'' {
-			char := string(l.nextChar())
+			// Handle Character Literals
+			char := ""
+			if l.peekChar() == '\\' {
+				char += string(l.nextChar())
+			}
+			char += string(l.nextChar())
 			l.nextChar()
 			tokens = append(tokens, Token{CHAR, char})
+		} else if unicode.IsDigit(ch) || (ch == '.' && unicode.IsDigit(l.peekChar())) {
+			// Handle Numbers (including floats and scientific notation)
+			num := string(ch)
+			for unicode.IsDigit(l.peekChar()) || l.peekChar() == '.' || l.peekChar() == 'e' || l.peekChar() == 'E' {
+				num += string(l.nextChar())
+			}
+			tokens = append(tokens, Token{NUMBER, num})
 		} else if unicode.IsLetter(ch) || ch == '_' {
-			identifier := string(ch)
+			// Handle Identifiers & Keywords
+			ident := string(ch)
 			for unicode.IsLetter(l.peekChar()) || unicode.IsDigit(l.peekChar()) || l.peekChar() == '_' {
-				identifier += string(l.nextChar())
+				ident += string(l.nextChar())
 			}
-			if keywords[identifier] {
-				tokens = append(tokens, Token{KEYWORD, identifier})
+			if keywords[ident] {
+				tokens = append(tokens, Token{KEYWORD, ident})
 			} else {
-				tokens = append(tokens, Token{IDENTIFIER, identifier})
+				tokens = append(tokens, Token{IDENTIFIER, ident})
 			}
-		} else if unicode.IsDigit(ch) {
-			number := string(ch)
-			for unicode.IsDigit(l.peekChar()) {
-				number += string(l.nextChar())
-			}
-			tokens = append(tokens, Token{NUMBER, number})
 		} else if isOperator(ch) {
-			tokens = append(tokens, Token{OPERATOR, string(ch)})
+			// Handle Multi-character Operators
+			operator := string(ch)
+			if multiCharOps[operator+string(l.peekChar())] {
+				operator += string(l.nextChar())
+			}
+			tokens = append(tokens, Token{OPERATOR, operator})
 		} else if isBracket(ch) {
 			tokens = append(tokens, Token{BRACKET, string(ch)})
 		} else if ch == ';' {
 			tokens = append(tokens, Token{SEMICOLON, string(ch)})
+		} else if ch == ',' {
+			tokens = append(tokens, Token{COMMA, string(ch)})
+		} else if ch == '.' {
+			tokens = append(tokens, Token{DOT, string(ch)})
 		} else {
 			tokens = append(tokens, Token{UNKNOWN, string(ch)})
 		}
@@ -159,6 +198,6 @@ func main() {
 	lexer := NewLexer(content)
 	tokens := lexer.Lex()
 	for _, token := range tokens {
-		fmt.Printf("Type: %-10s Value: %s\n", token.Type, token.Value)
+		fmt.Printf("Type: %-12s Value: %s\n", token.Type, token.Value)
 	}
 }
