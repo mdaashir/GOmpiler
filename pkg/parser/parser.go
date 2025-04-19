@@ -105,8 +105,27 @@ func (p *Parser) Parse() (*ast.Program, error) {
 		Declarations: []ast.Declaration{},
 	}
 
+	// Add timeout protection to prevent infinite loops
+	maxTokens := len(p.tokens) * 10 // Reasonable upper bound
+	tokensParsed := 0
+	timeout := time.After(30 * time.Second)
+
 	// Parse declarations until end of file
 	for p.curToken.Type != lexer.TokenEOF {
+		// Check for timeout
+		select {
+		case <-timeout:
+			return nil, fmt.Errorf("parsing timed out after 30 seconds - possible infinite loop")
+		default:
+			// Continue parsing
+		}
+
+		// Check for excessive token processing (possible infinite loop)
+		tokensParsed++
+		if tokensParsed > maxTokens {
+			return nil, fmt.Errorf("parsing aborted - processed too many tokens (%d), possible infinite loop", tokensParsed)
+		}
+
 		p.reportProgress("Parsing top-level declaration")
 
 		switch p.curToken.Type {
@@ -755,8 +774,39 @@ func (p *Parser) parseSwitchStatement() ast.Statement {
 }
 
 func (p *Parser) parseReturnStatement() ast.Statement {
+	p.nextToken() // Skip 'return' keyword
+
+	// If the next token is a semicolon, this is a return without a value
+	if p.curToken.Type == lexer.TokenPunctuation && p.curToken.Literal == ";" {
+		p.nextToken() // Skip ';'
+		return &ast.ReturnStatement{
+			Value: nil,
+		}
+	}
+
+	// Parse the return value expression
+	expr := p.parseExpression()
+
+	// Skip to the semicolon if present
+	if p.curToken.Type == lexer.TokenPunctuation && p.curToken.Literal == ";" {
+		p.nextToken() // Skip ';'
+	}
+
 	return &ast.ReturnStatement{
-		Value: nil,
+		Value: expr,
+	}
+}
+
+	// Parse the return value expression
+	expr := p.parseExpression()
+
+	// Skip to the semicolon if present
+	if p.curToken.Type == lexer.TokenPunctuation && p.curToken.Literal == ";" {
+		p.nextToken() // Skip ';'
+	}
+
+	return &ast.ReturnStatement{
+		Value: expr,
 	}
 }
 
