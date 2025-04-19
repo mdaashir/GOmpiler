@@ -797,19 +797,6 @@ func (p *Parser) parseReturnStatement() ast.Statement {
 	}
 }
 
-	// Parse the return value expression
-	expr := p.parseExpression()
-
-	// Skip to the semicolon if present
-	if p.curToken.Type == lexer.TokenPunctuation && p.curToken.Literal == ";" {
-		p.nextToken() // Skip ';'
-	}
-
-	return &ast.ReturnStatement{
-		Value: expr,
-	}
-}
-
 func (p *Parser) parseBreakStatement() ast.Statement {
 	return &ast.BreakStatement{}
 }
