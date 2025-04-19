@@ -2,6 +2,9 @@ package parser
 
 import (
 	"fmt"
+	"log"
+	"os"
+	"time"
 
 	"github.com/mdaashir/GOmpiler-2/pkg/ast"
 	"github.com/mdaashir/GOmpiler-2/pkg/lexer"
@@ -30,21 +33,55 @@ var precedences = map[lexer.TokenType]int{
 	lexer.TokenPunctuation: LOWEST, // Will be refined in curPrecedence
 }
 
+// reportProgress logs parsing progress
+func (p *Parser) reportProgress(context string) {
+	if !p.showProgress {
+		return
+	}
+
+	now := time.Now()
+	// Only log if it's been at least 500ms since the last progress log
+	if now.Sub(p.lastProgressLog) >= 500*time.Millisecond {
+		percentComplete := 0.0
+		if p.totalTokens > 0 {
+			percentComplete = float64(p.pos) / float64(p.totalTokens) * 100
+		}
+		p.logger.Printf("%s - %.1f%% complete (%d/%d tokens)",
+			context, percentComplete, p.pos, p.totalTokens)
+		p.lastProgressLog = now
+	}
+}
+
 // Parser represents a parser for C++ code
 type Parser struct {
-	tokens    []lexer.Token
-	curToken  lexer.Token
-	peekToken lexer.Token
-	pos       int
-	errors    []string
+	tokens          []lexer.Token
+	curToken        lexer.Token
+	peekToken       lexer.Token
+	pos             int
+	errors          []string
+	totalTokens     int
+	startTime       time.Time
+	lastProgressLog time.Time
+	logger          *log.Logger
+	showProgress    bool
 }
 
 // New creates a new parser for the given tokens
 func New(tokens []lexer.Token) *Parser {
+	return NewWithOptions(tokens, true)
+}
+
+// NewWithOptions creates a new parser with configurable progress reporting
+func NewWithOptions(tokens []lexer.Token, showProgress bool) *Parser {
 	p := &Parser{
-		tokens: tokens,
-		pos:    0,
-		errors: []string{},
+		tokens:          tokens,
+		pos:             0,
+		errors:          []string{},
+		totalTokens:     len(tokens),
+		startTime:       time.Now(),
+		lastProgressLog: time.Now(),
+		logger:          log.New(os.Stdout, "[Parser] ", log.Ltime),
+		showProgress:    showProgress,
 	}
 
 	// Set the current and peek tokens
@@ -55,23 +92,31 @@ func New(tokens []lexer.Token) *Parser {
 		p.peekToken = tokens[1]
 	}
 
+	if showProgress {
+		p.logger.Printf("Starting to parse %d tokens", p.totalTokens)
+	}
 	return p
 }
 
 // Parse parses the tokens into an AST
 func (p *Parser) Parse() (*ast.Program, error) {
+	p.logger.Printf("Starting parsing process with %d tokens", p.totalTokens)
 	program := &ast.Program{
 		Declarations: []ast.Declaration{},
 	}
 
 	// Parse declarations until end of file
 	for p.curToken.Type != lexer.TokenEOF {
+		p.reportProgress("Parsing top-level declaration")
+
 		switch p.curToken.Type {
 		case lexer.TokenPreprocessor:
+			p.logger.Printf("Parsing preprocessor directive: %s", p.curToken.Literal)
 			if decl := p.parsePreprocessorDirective(); decl != nil {
 				program.Declarations = append(program.Declarations, decl)
 			}
 		case lexer.TokenKeyword:
+			p.logger.Printf("Parsing keyword: %s", p.curToken.Literal)
 			if decl := p.parseDeclaration(); decl != nil {
 				program.Declarations = append(program.Declarations, decl)
 			}
@@ -79,6 +124,7 @@ func (p *Parser) Parse() (*ast.Program, error) {
 			// Skip punctuation tokens at the top level
 			p.nextToken()
 		case lexer.TokenIdentifier:
+			p.logger.Printf("Parsing identifier: %s", p.curToken.Literal)
 			// Handle global function definitions that might start with a type alias or similar
 			if decl := p.parseVariableOrFunctionDeclaration(); decl != nil {
 				program.Declarations = append(program.Declarations, decl)
@@ -93,7 +139,12 @@ func (p *Parser) Parse() (*ast.Program, error) {
 		}
 	}
 
+	elapsed := time.Since(p.startTime)
+	p.logger.Printf("Parsing completed in %v - %d declarations found",
+		elapsed.Round(time.Millisecond), len(program.Declarations))
+
 	if len(p.errors) > 0 {
+		p.logger.Printf("Encountered %d parsing errors", len(p.errors))
 		return nil, fmt.Errorf("parsing errors: %v", p.errors)
 	}
 
@@ -109,6 +160,11 @@ func (p *Parser) nextToken() {
 		p.peekToken = p.tokens[p.pos]
 	} else {
 		p.peekToken = lexer.Token{Type: lexer.TokenEOF}
+	}
+
+	// Report progress periodically
+	if p.pos%500 == 0 || p.curToken.Type == lexer.TokenEOF {
+		p.reportProgress("Processing tokens")
 	}
 }
 
@@ -258,6 +314,8 @@ func (p *Parser) parsePreprocessorDirective() ast.Declaration {
 
 func (p *Parser) parseVariableOrFunctionDeclaration() ast.Declaration {
 	// Save the current position to backtrack if needed
+	_ = p.pos // We save position but don't use it currently
+
 	// Get the complete type with qualifiers
 	typeSpec := p.parseCompleteType()
 
@@ -268,6 +326,7 @@ func (p *Parser) parseVariableOrFunctionDeclaration() ast.Declaration {
 	}
 
 	name := p.curToken.Literal
+	p.logger.Printf("Parsing declaration for: %s", name)
 	p.nextToken()
 
 	// If the next token is '(', this is a function declaration
@@ -333,9 +392,11 @@ func (p *Parser) parseVariableOrFunctionDeclaration() ast.Declaration {
 
 		// Check if there's a function body
 		if p.curToken.Type == lexer.TokenPunctuation && p.curToken.Literal == "{" {
+			p.logger.Printf("Parsing function body for: %s", name)
 			// Parse function body
 			body := p.parseBlockStatement()
 
+			p.logger.Printf("Completed parsing function: %s", name)
 			return &ast.FunctionDeclaration{
 				Type:       typeSpec,
 				Name:       name,
@@ -444,9 +505,53 @@ func (p *Parser) parseVariable(typeSpec, name string) ast.Declaration {
 }
 
 func (p *Parser) parseBlockStatement() *ast.BlockStatement {
-	return &ast.BlockStatement{
+	p.reportProgress("Parsing block statement")
+
+	block := &ast.BlockStatement{
 		Statements: []ast.Statement{},
 	}
+
+	// Expect opening brace
+	if p.curToken.Type == lexer.TokenPunctuation && p.curToken.Literal == "{" {
+		p.nextToken() // Skip '{'
+
+		depth := 1
+		stmtCount := 0
+
+		// Parse statements until closing brace
+		for depth > 0 && p.curToken.Type != lexer.TokenEOF {
+			// Track nesting level
+			if p.curToken.Type == lexer.TokenPunctuation {
+				if p.curToken.Literal == "{" {
+					depth++
+				} else if p.curToken.Literal == "}" {
+					depth--
+					if depth == 0 {
+						// We've reached the closing brace of this block
+						p.nextToken() // Skip '}'
+						break
+					}
+				}
+			}
+
+			if depth > 0 {
+				stmt := p.parseStatement()
+				if stmt != nil {
+					block.Statements = append(block.Statements, stmt)
+					stmtCount++
+
+					// Log progress for large blocks
+					if stmtCount%20 == 0 {
+						p.reportProgress(fmt.Sprintf("Parsed %d statements in block", stmtCount))
+					}
+				}
+			}
+		}
+
+		p.logger.Printf("Completed block with %d statements", len(block.Statements))
+	}
+
+	return block
 }
 
 func (p *Parser) parseStatement() ast.Statement {
