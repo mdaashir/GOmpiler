@@ -7,6 +7,29 @@ import (
 	"github.com/mdaashir/GOmpiler-2/pkg/lexer"
 )
 
+// Define operator precedence levels
+const (
+	LOWEST      = 1
+	ASSIGN      = 2  // =
+	CONDITIONAL = 3  // ?:
+	LOGICAL_OR  = 4  // ||
+	LOGICAL_AND = 5  // &&
+	EQUALS      = 6  // ==, !=
+	LESSGREATER = 7  // >, <, >=, <=
+	SUM         = 8  // +, -
+	PRODUCT     = 9  // *, /, %
+	PREFIX      = 10 // -X, !X
+	CALL        = 11 // myFunction(X)
+	INDEX       = 12 // array[index]
+	MEMBER      = 13 // obj.member
+)
+
+// Map token types to precedence levels
+var precedences = map[lexer.TokenType]int{
+	lexer.TokenOperator:    LOWEST, // Will be refined in curPrecedence
+	lexer.TokenPunctuation: LOWEST, // Will be refined in curPrecedence
+}
+
 // Parser represents a parser for C++ code
 type Parser struct {
 	tokens    []lexer.Token
@@ -744,7 +767,13 @@ func (p *Parser) parseGotoStatement() ast.Statement {
 	}
 }
 
-func (p *Parser) parseExpression() ast.Expression {
+func (p *Parser) parseExpression(precedence ...int) ast.Expression {
+	// Default to lowest precedence if not specified
+	prec := LOWEST
+	if len(precedence) > 0 {
+		prec = precedence[0]
+	}
+
 	// For C++ stream operations like cout << value
 	if p.curToken.Type == lexer.TokenIdentifier {
 		identifier := &ast.Identifier{Value: p.curToken.Literal}
