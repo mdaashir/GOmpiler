@@ -13,18 +13,11 @@ import (
 // Define operator precedence levels
 const (
 	LOWEST      = 1
-	ASSIGN      = 2  // =
-	CONDITIONAL = 3  // ?:
-	LOGICAL_OR  = 4  // ||
-	LOGICAL_AND = 5  // &&
-	EQUALS      = 6  // ==, !=
-	LESSGREATER = 7  // >, <, >=, <=
-	SUM         = 8  // +, -
-	PRODUCT     = 9  // *, /, %
-	PREFIX      = 10 // -X, !X
-	CALL        = 11 // myFunction(X)
-	INDEX       = 12 // array[index]
-	MEMBER      = 13 // obj.member
+	ASSIGN      = 2 // =
+	EQUALS      = 3 // ==, !=
+	LESSGREATER = 4 // >, <, >=, <=
+	SUM         = 5 // +, -
+	PRODUCT     = 6 // *, /, %
 )
 
 // Map token types to precedence levels
@@ -40,7 +33,7 @@ func (p *Parser) reportProgress(context string) {
 	}
 
 	now := time.Now()
-	// Only log if it's been at least 500ms since the last progress log
+	// Only log if it's been at least 500 ms since the last progress log
 	if now.Sub(p.lastProgressLog) >= 500*time.Millisecond {
 		percentComplete := 0.0
 		if p.totalTokens > 0 {
@@ -110,7 +103,7 @@ func (p *Parser) Parse() (*ast.Program, error) {
 	tokensParsed := 0
 	timeout := time.After(30 * time.Second)
 
-	// Parse declarations until end of file
+	// Parse declarations until the end of the file
 	for p.curToken.Type != lexer.TokenEOF {
 		// Check for timeout
 		select {
@@ -222,7 +215,7 @@ func (p *Parser) parseDeclaration() ast.Declaration {
 
 // parseClassOrStructDeclaration parses a class or struct declaration
 func (p *Parser) parseClassOrStructDeclaration() ast.Declaration {
-	// For now, just return a simple class declaration as a placeholder
+	// For now, return a simple class declaration as a placeholder
 	return &ast.ClassDeclaration{
 		Name:        "DummyClass",
 		BaseClasses: []string{},
@@ -232,7 +225,7 @@ func (p *Parser) parseClassOrStructDeclaration() ast.Declaration {
 
 // parseNamespaceDeclaration parses a namespace declaration
 func (p *Parser) parseNamespaceDeclaration() ast.Declaration {
-	// For now, just return a simple namespace declaration as a placeholder
+	// For now, return a simple namespace declaration as a placeholder
 	return &ast.NamespaceDeclaration{
 		Name:         "DummyNamespace",
 		Declarations: []ast.Declaration{},
@@ -241,7 +234,7 @@ func (p *Parser) parseNamespaceDeclaration() ast.Declaration {
 
 // parseEnumDeclaration parses an enum declaration
 func (p *Parser) parseEnumDeclaration() ast.Declaration {
-	// For now, just return a simple enum declaration as a placeholder
+	// For now, return a simple enum declaration as a placeholder
 	return &ast.EnumDeclaration{
 		Name:   "DummyEnum",
 		Values: []string{"Value1", "Value2"},
@@ -355,14 +348,14 @@ func (p *Parser) parseVariableOrFunctionDeclaration() ast.Declaration {
 		// Parse parameters
 		var params []ast.Parameter
 
-		// If not immediately closing ')', there are parameters
+		// If not immediately closing, ')', there are parameters
 		if !(p.curToken.Type == lexer.TokenPunctuation && p.curToken.Literal == ")") {
 			for {
 				// Simple parameter parsing - just skip tokens until ',' or ')'
 				paramType := ""
 				paramName := ""
 
-				// Try to get parameter type
+				// Try to get a parameter type
 				if p.curToken.Type == lexer.TokenKeyword {
 					paramType = p.curToken.Literal
 					p.nextToken()
@@ -624,7 +617,7 @@ func (p *Parser) parseStatement() ast.Statement {
 			p.nextToken() // Skip ';'
 			return &ast.EmptyStatement{}
 		}
-		// Fall through to default case
+		// Fall through to a default case
 	case lexer.TokenIdentifier:
 		// This could be an expression statement (assignment, function call, etc.)
 		stmt := &ast.ExpressionStatement{
@@ -719,7 +712,7 @@ func (p *Parser) parseForStatement() ast.Statement {
 
 		// Parse condition
 		if p.curToken.Type != lexer.TokenPunctuation || p.curToken.Literal != ";" {
-			condition = p.parseExpressionWithPrecedence(LOWEST)
+			condition = p.parseExpressionWithPrecedence()
 		}
 
 		// Skip semicolon after condition
@@ -731,7 +724,7 @@ func (p *Parser) parseForStatement() ast.Statement {
 
 		// Parse increment
 		if p.curToken.Type != lexer.TokenPunctuation || p.curToken.Literal != ")" {
-			increment = p.parseExpressionWithPrecedence(LOWEST)
+			increment = p.parseExpressionWithPrecedence()
 		}
 
 		// Skip closing parenthesis
@@ -854,13 +847,11 @@ func (p *Parser) parseOperatorExpression(left ast.Expression) ast.Expression {
 	}
 
 	// Remember precedence of current operator
-	precedence := p.curPrecedence()
-
 	// Move to the next token
 	p.nextToken()
 
 	// Parse the right side of the expression with appropriate precedence
-	expression.Right = p.parseExpressionWithPrecedence(precedence)
+	expression.Right = p.parseExpressionWithPrecedence()
 
 	return expression
 }
@@ -894,19 +885,17 @@ func (p *Parser) parseGotoStatement() ast.Statement {
 }
 
 func (p *Parser) parseExpression(precedence ...int) ast.Expression {
-	// Default to lowest precedence if not specified
-	prec := LOWEST
+	// Default to the lowest precedence if not specified
 	if len(precedence) > 0 {
-		prec = precedence[0]
+
 	}
 
 	// Use the precedence level for parsing
-	return p.parseExpressionWithPrecedence(prec)
+	return p.parseExpressionWithPrecedence()
 }
 
 // parseExpressionWithPrecedence parses an expression with a given precedence
-func (p *Parser) parseExpressionWithPrecedence(precedence int) ast.Expression {
-	// For C++ stream operations like cout << value
+func (p *Parser) parseExpressionWithPrecedence() ast.Expression {
 	if p.curToken.Type == lexer.TokenIdentifier {
 		identifier := &ast.Identifier{Value: p.curToken.Literal}
 		p.nextToken()
@@ -1037,11 +1026,11 @@ func (p *Parser) parseCallExpression(function ast.Expression) ast.Expression {
 
 	var args []ast.Expression
 
-	// If not immediately closing ')', there are arguments
+	// If not immediately closing, ')', there are arguments
 	if !(p.curToken.Type == lexer.TokenPunctuation && p.curToken.Literal == ")") {
 		for {
 			// Parse argument expression
-			arg := p.parseExpressionWithPrecedence(LOWEST)
+			arg := p.parseExpressionWithPrecedence()
 			args = append(args, arg)
 
 			// Check if we're at the end of arguments
@@ -1096,7 +1085,7 @@ func (p *Parser) parsePrimaryExpression() ast.Expression {
 			}
 		}
 
-		// Check for arrow operator
+		// Check for the arrow operator
 		if p.curToken.Type == lexer.TokenOperator && p.curToken.Literal == "->" {
 			p.nextToken() // Skip '->'
 
@@ -1108,7 +1097,7 @@ func (p *Parser) parsePrimaryExpression() ast.Expression {
 			property := &ast.Identifier{Value: p.curToken.Literal}
 			p.nextToken() // Skip property name
 
-			// Create a member expression with arrow operator
+			// Create a member expression with an arrow operator
 			return &ast.MemberExpression{
 				Object:   identifier,
 				Property: property,
@@ -1155,7 +1144,7 @@ func (p *Parser) parsePrimaryExpression() ast.Expression {
 		if p.curToken.Literal == "(" {
 			p.nextToken() // Skip '('
 
-			expr := p.parseExpressionWithPrecedence(LOWEST)
+			expr := p.parseExpressionWithPrecedence()
 
 			if p.curToken.Type == lexer.TokenPunctuation && p.curToken.Literal == ")" {
 				p.nextToken() // Skip ')'

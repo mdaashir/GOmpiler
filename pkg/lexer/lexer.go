@@ -6,7 +6,7 @@ import (
 	"unicode/utf8"
 )
 
-// TokenType represents the type of a token
+// TokenType represents the type of token
 type TokenType int
 
 // Token types
@@ -464,7 +464,7 @@ func (l *Lexer) readPreprocessor() string {
 		l.readRune()
 	}
 
-	// Read until end of line
+	// Read until the end of the line
 	for l.ch != '\n' && l.ch != 0 {
 		// Handle line continuation
 		if l.ch == '\\' && l.peekRune() == '\n' {

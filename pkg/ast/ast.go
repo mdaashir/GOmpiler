@@ -11,7 +11,13 @@ type Statement interface {
 	statementNode()
 }
 
-// Program represents a complete program
+// Expression represents an expression in the AST
+type Expression interface {
+	Node
+	expressionNode()
+}
+
+// The Program represents a complete program
 type Program struct {
 	Declarations []Declaration
 }

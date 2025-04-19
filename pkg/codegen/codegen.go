@@ -66,7 +66,12 @@ func (g *Generator) writeIR(filename string) error {
 	if err != nil {
 		return fmt.Errorf("creating IR file: %w", err)
 	}
-	defer file.Close()
+	defer func(file *os.File) {
+		err := file.Close()
+		if err != nil {
+
+		}
+	}(file)
 
 	if _, err := file.WriteString(g.module.String()); err != nil {
 		return fmt.Errorf("writing IR: %w", err)
@@ -79,7 +84,7 @@ func (g *Generator) writeIR(filename string) error {
 func (g *Generator) compileIR(irFile, outputFile string) error {
 	// This is a simplified implementation
 	// In a real compiler, you would use LLVM's APIs to compile the IR to an executable
-	// For now, we'll simulate it by calling external tools
+	// For now. We'll simulate it by calling external tools
 
 	// First, compile the IR to an object file
 	objFile := outputFile + ".o"
@@ -95,13 +100,13 @@ func (g *Generator) compileIR(irFile, outputFile string) error {
 func (g *Generator) generateDeclaration(decl ast.Declaration) error {
 	switch d := decl.(type) {
 	case *ast.FunctionDeclaration:
-		return g.generateFunctionDeclaration(d)
+		return g.generateFunctionDeclaration()
 	case *ast.VariableDeclaration:
-		return g.generateGlobalVariableDeclaration(d)
+		return g.generateGlobalVariableDeclaration()
 	case *ast.ClassDeclaration:
-		return g.generateClassDeclaration(d)
+		return g.generateClassDeclaration()
 	case *ast.PreprocessorDirective:
-		// Just ignore preprocessor directives for code generation
+		// Ignore preprocessor directives for code generation
 		return nil
 	case *ast.NamespaceDeclaration:
 		// Generate code for declarations in the namespace
@@ -118,44 +123,44 @@ func (g *Generator) generateDeclaration(decl ast.Declaration) error {
 }
 
 // generateFunctionDeclaration generates LLVM IR for a function declaration (stub)
-func (g *Generator) generateFunctionDeclaration(fn *ast.FunctionDeclaration) error {
+func (g *Generator) generateFunctionDeclaration() error {
 	// Simplified stub implementation
 	// This would normally create LLVM IR for the function
 	return nil
 }
 
 // generateGlobalVariableDeclaration generates LLVM IR for a global variable declaration (stub)
-func (g *Generator) generateGlobalVariableDeclaration(vd *ast.VariableDeclaration) error {
+func (g *Generator) generateGlobalVariableDeclaration() error {
 	// Simplified stub implementation
 	// This would normally create LLVM IR for the global variable
 	return nil
 }
 
 // generateClassDeclaration generates LLVM IR for a class declaration (stub)
-func (g *Generator) generateClassDeclaration(cd *ast.ClassDeclaration) error {
+func (g *Generator) generateClassDeclaration() error {
 	// Simplified stub implementation
 	// This would normally create LLVM IR for the class
 	return nil
 }
 
 // getLLVMType converts a C++ type string to an LLVM type (stub)
-func (g *Generator) getLLVMType(typeStr string) types.Type {
+func (g *Generator) getLLVMType() types.Type {
 	// Simplified implementation - just return i32 for everything
 	return types.I32
 }
 
-// Other needed but stubbed-out methods to make the code compile
-func (g *Generator) generateExpression(expr ast.Expression) (value.Value, error) {
+// Other necessary but stubbed-out methods to make the code compiler
+func (g *Generator) generateExpression() (value.Value, error) {
 	// Simplified stub implementation
 	return constant.NewInt(types.I32, 0), nil
 }
 
-func (g *Generator) generateStatement(stmt ast.Statement) error {
+func (g *Generator) generateStatement() error {
 	// Simplified stub implementation
 	return nil
 }
 
-func (g *Generator) generateBlockStatement(block *ast.BlockStatement) error {
+func (g *Generator) generateBlockStatement() error {
 	// Simplified stub implementation
 	return nil
 }

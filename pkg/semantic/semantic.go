@@ -8,15 +8,15 @@ import (
 
 // Analyzer performs semantic analysis on the AST
 type Analyzer struct {
-	errors      []string
-	scopes      []*Scope
+	errors       []string
+	scopes       []*Scope
 	currentScope *Scope
 }
 
 // Scope represents a symbol scope
 type Scope struct {
-	Parent   *Scope
-	Symbols  map[string]Symbol
+	Parent  *Scope
+	Symbols map[string]Symbol
 }
 
 // Symbol represents a symbol in the symbol table
@@ -77,9 +77,9 @@ func (a *Analyzer) initBuiltinTypes() {
 
 	for _, typeName := range builtinTypes {
 		a.currentScope.Symbols[typeName] = Symbol{
-			Name: typeName,
-			Type: typeName,
-			Kind: TypeSymbol,
+			Name:  typeName,
+			Type:  typeName,
+			Kind:  TypeSymbol,
 			Scope: a.currentScope,
 		}
 	}
@@ -108,7 +108,7 @@ func (a *Analyzer) collectDeclaration(decl ast.Declaration) {
 	case *ast.TypedefDeclaration:
 		a.collectTypedefDeclaration(d)
 	case *ast.TemplateDeclaration:
-		// Templates are complex, for now just collect the inner declaration
+		// Templates are complex, for now collect the inner declaration
 		if d.Declaration != nil {
 			a.collectDeclaration(d.Declaration)
 		}
@@ -173,7 +173,7 @@ func (a *Analyzer) collectVariableDeclaration(vd *ast.VariableDeclaration) {
 
 	if vd.Initializer != nil {
 		// Check the initializer expression
-		a.analyzeExpression(vd.Initializer)
+		a.analyzeExpression()
 	}
 }
 
@@ -302,7 +302,7 @@ func (a *Analyzer) validateDeclaration(decl ast.Declaration) {
 
 // validateFunctionDeclaration validates a function declaration
 func (a *Analyzer) validateFunctionDeclaration(fn *ast.FunctionDeclaration) {
-	// Check if return type exists
+	// Check if the return type exists
 	if !a.isValidType(fn.Type) {
 		a.addError(fmt.Sprintf("unknown return type '%s' for function '%s'", fn.Type, fn.Name))
 	}
@@ -315,13 +315,13 @@ func (a *Analyzer) validateFunctionDeclaration(fn *ast.FunctionDeclaration) {
 	}
 
 	if fn.Body != nil {
-		// Create a new scope for function body
+		// Create a new scope for the function body
 		functionScope := &Scope{
 			Parent:  a.currentScope,
 			Symbols: make(map[string]Symbol),
 		}
 
-		// Add parameters to function scope
+		// Add parameters to the function scope
 		for _, param := range fn.Parameters {
 			functionScope.Symbols[param.Name] = Symbol{
 				Name:  param.Name,
@@ -344,7 +344,7 @@ func (a *Analyzer) validateFunctionDeclaration(fn *ast.FunctionDeclaration) {
 
 // validateVariableDeclaration validates a variable declaration
 func (a *Analyzer) validateVariableDeclaration(vd *ast.VariableDeclaration) {
-	// Check if type exists
+	// Check if the type exists
 	if !a.isValidType(vd.Type) {
 		a.addError(fmt.Sprintf("unknown type '%s' for variable '%s'", vd.Type, vd.Name))
 	}
@@ -639,7 +639,7 @@ func (a *Analyzer) validateIdentifier(expr *ast.Identifier) {
 	}
 }
 
-// analyzeBlockStatement analyzes a block statement during collection phase
+// analyzeBlockStatement analyzes a block statement during the collection phase
 func (a *Analyzer) analyzeBlockStatement(block *ast.BlockStatement) {
 	// Create a new scope for the block
 	blockScope := &Scope{
@@ -659,7 +659,7 @@ func (a *Analyzer) analyzeBlockStatement(block *ast.BlockStatement) {
 	a.popScope()
 }
 
-// analyzeStatement analyzes a statement during collection phase
+// analyzeStatement analyzes a statement during the collection phase
 func (a *Analyzer) analyzeStatement(stmt ast.Statement) {
 	switch s := stmt.(type) {
 	case *ast.BlockStatement:
@@ -667,12 +667,12 @@ func (a *Analyzer) analyzeStatement(stmt ast.Statement) {
 	case *ast.DeclarationStatement:
 		a.collectDeclaration(s.Declaration)
 	case *ast.ExpressionStatement:
-		a.analyzeExpression(s.Expression)
+		a.analyzeExpression()
 	}
 }
 
-// analyzeExpression analyzes an expression during collection phase
-func (a *Analyzer) analyzeExpression(expr ast.Expression) {
+// analyzeExpression analyzes an expression during the collection phase
+func (a *Analyzer) analyzeExpression() {
 	// Simplified implementation
 }
 
@@ -680,7 +680,7 @@ func (a *Analyzer) analyzeExpression(expr ast.Expression) {
 func (a *Analyzer) isValidType(typeName string) bool {
 	// TODO: Implement proper type checking with templates, pointers, etc.
 
-	// For now, just check if the type exists in any scope
+	// For now, check if the type exists in any scope
 	scope := a.currentScope
 	for scope != nil {
 		if symbol, exists := scope.Symbols[typeName]; exists && symbol.Kind == TypeSymbol {
