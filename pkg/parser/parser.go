@@ -889,6 +889,42 @@ func (p *Parser) parseMemberExpression(object ast.Expression) ast.Expression {
 	return expression
 }
 
+// parseCallExpression parses a function call expression
+func (p *Parser) parseCallExpression(function ast.Expression) ast.Expression {
+	p.nextToken() // Skip '('
+
+	var args []ast.Expression
+
+	// If not immediately closing ')', there are arguments
+	if !(p.curToken.Type == lexer.TokenPunctuation && p.curToken.Literal == ")") {
+		for {
+			// Parse argument expression
+			arg := p.parseExpressionWithPrecedence(LOWEST)
+			args = append(args, arg)
+
+			// Check if we're at the end of arguments
+			if p.curToken.Type == lexer.TokenPunctuation && p.curToken.Literal == ")" {
+				break
+			}
+
+			// Skip the comma
+			if p.curToken.Type == lexer.TokenPunctuation && p.curToken.Literal == "," {
+				p.nextToken()
+			} else {
+				p.addError(fmt.Sprintf("expected ',' or ')', got %s", p.curToken.Literal))
+				break
+			}
+		}
+	}
+
+	p.nextToken() // Skip ')'
+
+	return &ast.CallExpression{
+		Function:  function,
+		Arguments: args,
+	}
+}
+
 func (p *Parser) parsePrimaryExpression() ast.Expression {
 	switch p.curToken.Type {
 	case lexer.TokenIdentifier:
