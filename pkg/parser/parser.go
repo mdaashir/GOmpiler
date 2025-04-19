@@ -663,23 +663,7 @@ func (p *Parser) parseContinueStatement() ast.Statement {
 	return &ast.ContinueStatement{}
 }
 
-// addError adds an error message to the parser's error list
-func (p *Parser) addError(msg string) {
-	p.errors = append(p.errors, msg)
-}
-
-// nextToken advances to the next token
-func (p *Parser) nextToken() {
-	p.curToken = p.peekToken
-
-	if p.pos < len(p.tokens)-1 {
-		p.pos++
-		p.peekToken = p.tokens[p.pos]
-	} else {
-		// Use a sentinel EOF token when we've reached the end
-		p.peekToken = lexer.Token{Type: lexer.TokenEOF, Literal: ""}
-	}
-}
+// These methods are already defined above
 
 // parseCompleteType parses a C++ type including qualifiers, pointers, etc.
 func (p *Parser) parseCompleteType() string {
@@ -871,6 +855,31 @@ func (p *Parser) parseExpression(precedence ...int) ast.Expression {
 
 func (p *Parser) parseAssignmentExpression() ast.Expression {
 	return &ast.NullExpression{}
+}
+
+// parseMemberExpression parses a member access expression (obj.property or obj->property)
+func (p *Parser) parseMemberExpression(object ast.Expression) ast.Expression {
+	// Create the member expression
+	expression := &ast.MemberExpression{
+		Object: object,
+	}
+
+	// Skip the '.' or '->'
+	p.nextToken()
+
+	// The property should be an identifier
+	if p.curToken.Type != lexer.TokenIdentifier {
+		p.addError(fmt.Sprintf("expected identifier after '.' or '->', got %s", p.curToken.Literal))
+		return object
+	}
+
+	// Set the property name
+	expression.Property = &ast.Identifier{Value: p.curToken.Literal}
+
+	// Skip the property name
+	p.nextToken()
+
+	return expression
 }
 
 func (p *Parser) parsePrimaryExpression() ast.Expression {
