@@ -595,7 +595,7 @@ func (p *Parser) parseForStatement() ast.Statement {
 
 		// Parse condition
 		if p.curToken.Type != lexer.TokenPunctuation || p.curToken.Literal != ";" {
-			condition = p.parseExpression()
+			condition = p.parseExpressionWithPrecedence(LOWEST)
 		}
 
 		// Skip semicolon after condition
@@ -607,7 +607,7 @@ func (p *Parser) parseForStatement() ast.Statement {
 
 		// Parse increment
 		if p.curToken.Type != lexer.TokenPunctuation || p.curToken.Literal != ")" {
-			increment = p.parseExpression()
+			increment = p.parseExpressionWithPrecedence(LOWEST)
 		}
 
 		// Skip closing parenthesis
@@ -718,7 +718,7 @@ func (p *Parser) parseOperatorExpression(left ast.Expression) ast.Expression {
 	p.nextToken()
 
 	// Parse the right side of the expression with appropriate precedence
-	expression.Right = p.parseExpression(precedence)
+	expression.Right = p.parseExpressionWithPrecedence(precedence)
 
 	return expression
 }
@@ -758,6 +758,12 @@ func (p *Parser) parseExpression(precedence ...int) ast.Expression {
 		prec = precedence[0]
 	}
 
+	// Use the precedence level for parsing
+	return p.parseExpressionWithPrecedence(prec)
+}
+
+// parseExpressionWithPrecedence parses an expression with a given precedence
+func (p *Parser) parseExpressionWithPrecedence(precedence int) ast.Expression {
 	// For C++ stream operations like cout << value
 	if p.curToken.Type == lexer.TokenIdentifier {
 		identifier := &ast.Identifier{Value: p.curToken.Literal}
@@ -798,6 +804,7 @@ func (p *Parser) parseExpression(precedence ...int) ast.Expression {
 					Left:     expr,
 					Operator: operator,
 					Right:    right,
+					Token:    p.curToken,
 				}
 			}
 
@@ -898,7 +905,7 @@ func (p *Parser) parsePrimaryExpression() ast.Expression {
 			if !(p.curToken.Type == lexer.TokenPunctuation && p.curToken.Literal == ")") {
 				for {
 					// Parse argument expression
-					arg := p.parseExpression()
+					arg := p.parseExpressionWithPrecedence(LOWEST)
 					args = append(args, arg)
 
 					// Check if we're at the end of arguments
@@ -1001,7 +1008,7 @@ func (p *Parser) parsePrimaryExpression() ast.Expression {
 		if p.curToken.Literal == "(" {
 			p.nextToken() // Skip '('
 
-			expr := p.parseExpression()
+			expr := p.parseExpressionWithPrecedence(LOWEST)
 
 			if p.curToken.Type == lexer.TokenPunctuation && p.curToken.Literal == ")" {
 				p.nextToken() // Skip ')'
