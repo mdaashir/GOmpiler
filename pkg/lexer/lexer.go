@@ -47,57 +47,57 @@ type Lexer struct {
 
 // List of C++ keywords
 var keywords = map[string]bool{
-	"auto":        true,
-	"break":       true,
-	"case":        true,
-	"class":       true,
-	"const":       true,
-	"continue":    true,
-	"default":     true,
-	"delete":      true,
-	"do":          true,
-	"else":        true,
-	"enum":        true,
-	"extern":      true,
-	"for":         true,
-	"if":          true,
-	"inline":      true,
-	"namespace":   true,
-	"new":         true,
-	"operator":    true,
-	"private":     true,
-	"protected":   true,
-	"public":      true,
-	"return":      true,
-	"static":      true,
-	"struct":      true,
-	"switch":      true,
-	"template":    true,
-	"this":        true,
-	"try":         true,
-	"typedef":     true,
-	"using":       true,
-	"virtual":     true,
-	"void":        true,
-	"while":       true,
-	"int":         true,
-	"float":       true,
-	"double":      true,
-	"char":        true,
-	"bool":        true,
-	"unsigned":    true,
-	"signed":      true,
-	"short":       true,
-	"long":        true,
-	"const_cast":  true,
-	"dynamic_cast": true,
+	"auto":             true,
+	"break":            true,
+	"case":             true,
+	"class":            true,
+	"const":            true,
+	"continue":         true,
+	"default":          true,
+	"delete":           true,
+	"do":               true,
+	"else":             true,
+	"enum":             true,
+	"extern":           true,
+	"for":              true,
+	"if":               true,
+	"inline":           true,
+	"namespace":        true,
+	"new":              true,
+	"operator":         true,
+	"private":          true,
+	"protected":        true,
+	"public":           true,
+	"return":           true,
+	"static":           true,
+	"struct":           true,
+	"switch":           true,
+	"template":         true,
+	"this":             true,
+	"try":              true,
+	"typedef":          true,
+	"using":            true,
+	"virtual":          true,
+	"void":             true,
+	"while":            true,
+	"int":              true,
+	"float":            true,
+	"double":           true,
+	"char":             true,
+	"bool":             true,
+	"unsigned":         true,
+	"signed":           true,
+	"short":            true,
+	"long":             true,
+	"const_cast":       true,
+	"dynamic_cast":     true,
 	"reinterpret_cast": true,
-	"static_cast": true,
-	"sizeof":      true,
-	"throw":       true,
-	"catch":       true,
-	"true":        true,
-	"false":       true,
+	"static_cast":      true,
+	"sizeof":           true,
+	"throw":            true,
+	"catch":            true,
+	"true":             true,
+	"false":            true,
 }
 
 // New creates a new lexer for the given input
@@ -305,7 +305,7 @@ func (l *Lexer) readOperator() string {
 	startPos := l.pos
 	l.column++
 	l.readRune()
-	
+
 	// Handle multi-character operators
 	if l.pos > 0 {
 		prev := l.input[startPos]
@@ -341,19 +341,31 @@ func (l *Lexer) readOperator() string {
 				l.readRune()
 			}
 		case '<':
-			if l.ch == '=' || l.ch == '<' {
+			if l.ch == '=' {
+				// <= operator
 				l.column++
 				l.readRune()
-				if l.ch == '=' && l.input[l.pos-1] == '<' {
+			} else if l.ch == '<' {
+				// << operator (stream insertion)
+				l.column++
+				l.readRune()
+				// Check for <<= operator
+				if l.ch == '=' {
 					l.column++
 					l.readRune()
 				}
 			}
 		case '>':
-			if l.ch == '=' || l.ch == '>' {
+			if l.ch == '=' {
+				// >= operator
 				l.column++
 				l.readRune()
-				if l.ch == '=' && l.input[l.pos-1] == '>' {
+			} else if l.ch == '>' {
+				// >> operator (stream extraction)
+				l.column++
+				l.readRune()
+				// Check for >>= operator
+				if l.ch == '=' {
 					l.column++
 					l.readRune()
 				}
@@ -378,9 +390,15 @@ func (l *Lexer) readOperator() string {
 				l.column++
 				l.readRune()
 			}
+		case ':':
+			// Handle scope resolution operator ::
+			if l.ch == ':' {
+				l.column++
+				l.readRune()
+			}
 		}
 	}
-	
+
 	return l.input[startPos:l.pos]
 }
 
@@ -391,12 +409,12 @@ func (l *Lexer) readLineComment() string {
 	l.readRune()
 	l.column++ // Skip the second '/'
 	l.readRune()
-	
+
 	for l.ch != '\n' && l.ch != 0 {
 		l.column++
 		l.readRune()
 	}
-	
+
 	return l.input[startPos:l.pos]
 }
 
@@ -407,7 +425,7 @@ func (l *Lexer) readBlockComment() string {
 	l.readRune()
 	l.column++ // Skip the '*'
 	l.readRune()
-	
+
 	for !(l.ch == '*' && l.peekRune() == '/') && l.ch != 0 {
 		if l.ch == '\n' {
 			l.line++
@@ -417,14 +435,14 @@ func (l *Lexer) readBlockComment() string {
 		}
 		l.readRune()
 	}
-	
+
 	if l.ch != 0 { // If not EOF
 		l.column++ // Skip the '*'
 		l.readRune()
 		l.column++ // Skip the '/'
 		l.readRune()
 	}
-	
+
 	return l.input[startPos:l.pos]
 }
 
@@ -433,19 +451,19 @@ func (l *Lexer) readPreprocessor() string {
 	startPos := l.pos
 	l.column++ // Skip the '#'
 	l.readRune()
-	
+
 	// Skip initial whitespace
 	for unicode.IsSpace(l.ch) && l.ch != '\n' {
 		l.column++
 		l.readRune()
 	}
-	
+
 	// Read directive name
 	for isLetter(l.ch) {
 		l.column++
 		l.readRune()
 	}
-	
+
 	// Read until end of line
 	for l.ch != '\n' && l.ch != 0 {
 		// Handle line continuation
@@ -465,7 +483,7 @@ func (l *Lexer) readPreprocessor() string {
 			l.readRune()
 		}
 	}
-	
+
 	return l.input[startPos:l.pos]
 }
 

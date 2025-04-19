@@ -11,12 +11,6 @@ type Statement interface {
 	statementNode()
 }
 
-// Expression represents an expression in the AST
-type Expression interface {
-	Node
-	expressionNode()
-}
-
 // Program represents a complete program
 type Program struct {
 	Declarations []Declaration
@@ -164,13 +158,6 @@ type AssignmentExpression struct {
 	Right    Expression
 }
 
-// BinaryExpression represents a binary expression
-type BinaryExpression struct {
-	Left     Expression
-	Operator string
-	Right    Expression
-}
-
 // UnaryExpression represents a unary expression
 type UnaryExpression struct {
 	Operator string
@@ -223,7 +210,7 @@ type BooleanLiteral struct {
 // NullExpression represents a null expression
 type NullExpression struct{}
 
-// Token literal and node implementations
+// TokenLiteral and node implementations
 func (p *Program) TokenLiteral() string { return "program" }
 
 func (fd *FunctionDeclaration) TokenLiteral() string { return fd.Name }
@@ -294,9 +281,6 @@ func (gs *GotoStatement) statementNode()       {}
 
 func (ae *AssignmentExpression) TokenLiteral() string { return "=" }
 func (ae *AssignmentExpression) expressionNode()      {}
-
-func (be *BinaryExpression) TokenLiteral() string { return be.Operator }
-func (be *BinaryExpression) expressionNode()      {}
 
 func (ue *UnaryExpression) TokenLiteral() string { return ue.Operator }
 func (ue *UnaryExpression) expressionNode()      {}

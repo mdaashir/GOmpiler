@@ -235,9 +235,8 @@ func (p *Parser) parsePreprocessorDirective() ast.Declaration {
 
 func (p *Parser) parseVariableOrFunctionDeclaration() ast.Declaration {
 	// Save the current position to backtrack if needed
-	// Get the type
-	typeSpec := p.curToken.Literal
-	p.nextToken()
+	// Get the complete type with qualifiers
+	typeSpec := p.parseCompleteType()
 
 	// Check for a name
 	if p.curToken.Type != lexer.TokenIdentifier {
@@ -641,6 +640,49 @@ func (p *Parser) parseContinueStatement() ast.Statement {
 	return &ast.ContinueStatement{}
 }
 
+// parseOperatorExpression parses a binary expression with an operator
+func (p *Parser) parseOperatorExpression(left ast.Expression) ast.Expression {
+	// Create a binary expression
+	expression := &ast.BinaryExpression{
+		Left:     left,
+		Operator: p.curToken.Literal,
+		Token:    p.curToken,
+	}
+
+	// Remember precedence of current operator
+	precedence := p.curPrecedence()
+
+	// Move to the next token
+	p.nextToken()
+
+	// Parse the right side of the expression with appropriate precedence
+	expression.Right = p.parseExpression(precedence)
+
+	return expression
+}
+
+// curPrecedence returns the precedence of the current token
+func (p *Parser) curPrecedence() int {
+	if precedence, ok := precedences[p.curToken.Type]; ok {
+		if p.curToken.Type == lexer.TokenOperator {
+			switch p.curToken.Literal {
+			case "=":
+				return ASSIGN
+			case "==", "!=":
+				return EQUALS
+			case "<", ">", "<=", ">=":
+				return LESSGREATER
+			case "+", "-":
+				return SUM
+			case "*", "/", "%":
+				return PRODUCT
+			}
+		}
+		return precedence
+	}
+	return LOWEST
+}
+
 func (p *Parser) parseGotoStatement() ast.Statement {
 	return &ast.GotoStatement{
 		Label: "dummyLabel",
@@ -648,7 +690,99 @@ func (p *Parser) parseGotoStatement() ast.Statement {
 }
 
 func (p *Parser) parseExpression() ast.Expression {
-	return &ast.NullExpression{}
+	// For C++ stream operations like cout << value
+	if p.curToken.Type == lexer.TokenIdentifier {
+		identifier := &ast.Identifier{Value: p.curToken.Literal}
+		p.nextToken()
+
+		// If this is a stream operation (<<, >>)
+		if p.curToken.Type == lexer.TokenOperator && (p.curToken.Literal == "<<" || p.curToken.Literal == ">>") {
+			var expr ast.Expression = identifier
+
+			// Continue parsing as long as there are stream operators
+			for p.curToken.Type == lexer.TokenOperator && (p.curToken.Literal == "<<" || p.curToken.Literal == ">>") {
+				operator := p.curToken.Literal
+				p.nextToken()
+
+				// Parse the right side of the operator
+				var right ast.Expression
+
+				switch p.curToken.Type {
+				case lexer.TokenIdentifier:
+					right = &ast.Identifier{Value: p.curToken.Literal}
+					p.nextToken()
+				case lexer.TokenString:
+					right = &ast.StringLiteral{Value: p.curToken.Literal}
+					p.nextToken()
+				case lexer.TokenNumber:
+					right = &ast.NumberLiteral{Value: p.curToken.Literal}
+					p.nextToken()
+				case lexer.TokenChar:
+					right = &ast.CharLiteral{Value: p.curToken.Literal}
+					p.nextToken()
+				default:
+					// If we can't identify the right operand, try parsing it as an expression
+					right = p.parsePrimaryExpression()
+				}
+
+				// Create a binary expression for this stream operation
+				expr = &ast.BinaryExpression{
+					Left:     expr,
+					Operator: operator,
+					Right:    right,
+				}
+			}
+
+			return expr
+		}
+
+		// If it's potentially a member access or function call
+		if p.curToken.Type == lexer.TokenPunctuation {
+			if p.curToken.Literal == "." || (p.curToken.Type == lexer.TokenOperator && p.curToken.Literal == "->") {
+				return p.parseMemberExpression(identifier)
+			} else if p.curToken.Literal == "(" {
+				return p.parseCallExpression(identifier)
+			}
+		}
+
+		// If it's a comparison operator
+		if p.curToken.Type == lexer.TokenOperator {
+			if p.curToken.Literal == "=" || p.curToken.Literal == ">" || p.curToken.Literal == "<" ||
+				p.curToken.Literal == ">=" || p.curToken.Literal == "<=" || p.curToken.Literal == "!=" ||
+				p.curToken.Literal == "==" {
+				return p.parseOperatorExpression(identifier)
+			}
+		}
+
+		return identifier
+	}
+
+	// Handle other expression types
+	switch p.curToken.Type {
+	case lexer.TokenNumber:
+		num := &ast.NumberLiteral{Value: p.curToken.Literal}
+		p.nextToken()
+		return num
+	case lexer.TokenString:
+		str := &ast.StringLiteral{Value: p.curToken.Literal}
+		p.nextToken()
+		return str
+	case lexer.TokenChar:
+		char := &ast.CharLiteral{Value: p.curToken.Literal}
+		p.nextToken()
+		return char
+	case lexer.TokenKeyword:
+		if p.curToken.Literal == "true" || p.curToken.Literal == "false" {
+			value := p.curToken.Literal == "true"
+			p.nextToken()
+			return &ast.BooleanLiteral{Value: value}
+		}
+	default:
+		panic("unhandled default case")
+	}
+
+	// Default to parsing a primary expression
+	return p.parsePrimaryExpression()
 }
 
 func (p *Parser) parseAssignmentExpression() ast.Expression {
