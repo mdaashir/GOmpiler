@@ -1,7 +1,6 @@
 package ast
 
 import (
-	"fmt"
 	"github.com/mdaashir/GOmpiler-2/pkg/lexer"
 )
 
