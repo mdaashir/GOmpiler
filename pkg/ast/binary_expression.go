@@ -18,10 +18,5 @@ func (be *BinaryExpression) TokenLiteral() string {
 	return be.Token.Literal
 }
 
-// String returns a string representation of the binary expression
-func (be *BinaryExpression) String() string {
-	return "(" + fmt.Sprintf("%v", be.Left) + " " + be.Operator + " " + fmt.Sprintf("%v", be.Right) + ")"
-}
-
 // expressionNode marks this as an Expression node
 func (be *BinaryExpression) expressionNode() {}

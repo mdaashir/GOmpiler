@@ -151,25 +151,11 @@ type GotoStatement struct {
 	Label string
 }
 
-// Expression represents an expression in the AST
-type Expression interface {
-	Node
-	expressionNode()
-}
-
 // AssignmentExpression represents an assignment expression
 type AssignmentExpression struct {
 	Left     Expression
 	Operator string
 	Right    Expression
-}
-
-// BinaryExpression represents a binary expression with an operator
-type BinaryExpression struct {
-	Left     Expression
-	Operator string
-	Right    Expression
-	Token    interface{}
 }
 
 // UnaryExpression represents a unary expression
@@ -330,9 +316,3 @@ func (bl *BooleanLiteral) expressionNode() {}
 
 func (ne *NullExpression) TokenLiteral() string { return "null" }
 func (ne *NullExpression) expressionNode()      {}
-
-func (be *BinaryExpression) TokenLiteral() string { return be.Operator }
-func (be *BinaryExpression) expressionNode()      {}
-
-func (be *BinaryExpression) TokenLiteral() string { return be.Operator }
-func (be *BinaryExpression) expressionNode()      {}
