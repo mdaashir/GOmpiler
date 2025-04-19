@@ -640,6 +640,61 @@ func (p *Parser) parseContinueStatement() ast.Statement {
 	return &ast.ContinueStatement{}
 }
 
+// addError adds an error message to the parser's error list
+func (p *Parser) addError(msg string) {
+	p.errors = append(p.errors, msg)
+}
+
+// nextToken advances to the next token
+func (p *Parser) nextToken() {
+	p.curToken = p.peekToken
+
+	if p.pos < len(p.tokens)-1 {
+		p.pos++
+		p.peekToken = p.tokens[p.pos]
+	} else {
+		// Use a sentinel EOF token when we've reached the end
+		p.peekToken = lexer.Token{Type: lexer.TokenEOF, Literal: ""}
+	}
+}
+
+// parseCompleteType parses a C++ type including qualifiers, pointers, etc.
+func (p *Parser) parseCompleteType() string {
+	// This is a simplified implementation that just collects tokens until
+	// we encounter something that can't be part of a type (like a variable name)
+	typeStr := ""
+
+	// Parse type qualifiers and specifiers
+	for p.curToken.Type == lexer.TokenKeyword {
+		// Check if it's a type-related keyword
+		switch p.curToken.Literal {
+		case "const", "volatile", "static", "unsigned", "signed", "long", "short",
+			"int", "float", "double", "char", "bool", "void", "auto",
+			"class", "struct", "enum", "union", "typename":
+			typeStr += p.curToken.Literal + " "
+			p.nextToken()
+		default:
+			// Not a type-related keyword, break the loop
+			break
+		}
+	}
+
+	// If we have an identifier, it could be a class/struct/enum name
+	if p.curToken.Type == lexer.TokenIdentifier {
+		typeStr += p.curToken.Literal
+		p.nextToken()
+	}
+
+	// Handle pointers, references, etc.
+	for p.curToken.Type == lexer.TokenOperator &&
+		(p.curToken.Literal == "*" || p.curToken.Literal == "&" || p.curToken.Literal == "&&") {
+		typeStr += p.curToken.Literal
+		p.nextToken()
+	}
+
+	return typeStr
+}
+
 // parseOperatorExpression parses a binary expression with an operator
 func (p *Parser) parseOperatorExpression(left ast.Expression) ast.Expression {
 	// Create a binary expression
