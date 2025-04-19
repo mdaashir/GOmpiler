@@ -3,13 +3,11 @@ package compiler
 import (
 	"fmt"
 	"io/ioutil"
-	"os"
-	"path/filepath"
 
+	"github.com/mdaashir/GOmpiler-2/pkg/codegen"
 	"github.com/mdaashir/GOmpiler-2/pkg/lexer"
 	"github.com/mdaashir/GOmpiler-2/pkg/parser"
 	"github.com/mdaashir/GOmpiler-2/pkg/semantic"
-	"github.com/mdaashir/GOmpiler-2/pkg/codegen"
 )
 
 // CompileFile compiles a C++ source file to an executable

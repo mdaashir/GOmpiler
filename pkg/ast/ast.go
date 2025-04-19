@@ -1,60 +1,181 @@
-// ContinueStatement represents a continue statement
-type ContinueStatement struct{}
+package ast
 
-func (cs *ContinueStatement) TokenLiteral() string {
-	return "continue"
+// Node represents a node in the AST
+type Node interface {
+	TokenLiteral() string
 }
 
-func (cs *ContinueStatement) statementNode() {}
+// Statement represents a statement in the AST
+type Statement interface {
+	Node
+	statementNode()
+}
+
+// Expression represents an expression in the AST
+type Expression interface {
+	Node
+	expressionNode()
+}
+
+// Program represents a complete program
+type Program struct {
+	Declarations []Declaration
+}
+
+// Declaration represents a declaration statement
+type Declaration interface {
+	Node
+	declarationNode()
+}
+
+// FunctionDeclaration represents a function declaration
+type FunctionDeclaration struct {
+	Type       string
+	Name       string
+	Parameters []Parameter
+	Body       *BlockStatement
+}
+
+// Parameter represents a function parameter
+type Parameter struct {
+	Type string
+	Name string
+}
+
+// VariableDeclaration represents a variable declaration
+type VariableDeclaration struct {
+	Type        string
+	Name        string
+	ArraySize   string
+	Initializer Expression
+}
+
+// TypedefDeclaration represents a typedef declaration
+type TypedefDeclaration struct {
+	OriginalType string
+	NewType      string
+}
+
+// ClassDeclaration represents a class/struct declaration
+type ClassDeclaration struct {
+	Name        string
+	BaseClasses []string
+	Members     []Declaration
+}
+
+// EnumDeclaration represents an enum declaration
+type EnumDeclaration struct {
+	Name   string
+	Values []string
+}
+
+// NamespaceDeclaration represents a namespace declaration
+type NamespaceDeclaration struct {
+	Name         string
+	Declarations []Declaration
+}
+
+// TemplateDeclaration represents a template declaration
+type TemplateDeclaration struct {
+	Declaration Declaration
+}
+
+// UsingDeclaration represents a using declaration
+type UsingDeclaration struct {
+	Namespace string
+}
+
+// PreprocessorDirective represents a preprocessor directive
+type PreprocessorDirective struct {
+	Directive string
+}
+
+// BlockStatement represents a block of statements
+type BlockStatement struct {
+	Statements []Statement
+}
+
+// EmptyStatement represents an empty statement (just a semicolon)
+type EmptyStatement struct{}
+
+// ExpressionStatement represents an expression used as a statement
+type ExpressionStatement struct {
+	Expression Expression
+}
+
+// DeclarationStatement represents a declaration used as a statement
+type DeclarationStatement struct {
+	Declaration Declaration
+}
+
+// IfStatement represents an if statement
+type IfStatement struct {
+	Condition   Expression
+	Consequence Statement
+	Alternative Statement
+}
+
+// ForStatement represents a for loop
+type ForStatement struct {
+	Initialization Statement
+	Condition      Expression
+	Increment      Expression
+	Body           Statement
+}
+
+// WhileStatement represents a while loop
+type WhileStatement struct {
+	Condition Expression
+	Body      Statement
+}
+
+// DoWhileStatement represents a do-while loop
+type DoWhileStatement struct {
+	Body      Statement
+	Condition Expression
+}
+
+// SwitchStatement represents a switch statement
+type SwitchStatement struct {
+	Value Expression
+	Body  Statement
+}
+
+// ReturnStatement represents a return statement
+type ReturnStatement struct {
+	Value Expression
+}
+
+// BreakStatement represents a break statement
+type BreakStatement struct{}
+
+// ContinueStatement represents a continue statement
+type ContinueStatement struct{}
 
 // GotoStatement represents a goto statement
 type GotoStatement struct {
 	Label string
 }
 
-func (gs *GotoStatement) TokenLiteral() string {
-	return "goto"
-}
-
-func (gs *GotoStatement) statementNode() {}
-
-// AssignmentExpression represents an assignment operation
+// AssignmentExpression represents an assignment expression
 type AssignmentExpression struct {
 	Left     Expression
 	Operator string
 	Right    Expression
 }
 
-func (ae *AssignmentExpression) TokenLiteral() string {
-	return ae.Operator
-}
-
-func (ae *AssignmentExpression) expressionNode() {}
-
-// BinaryExpression represents a binary operation
+// BinaryExpression represents a binary expression
 type BinaryExpression struct {
 	Left     Expression
 	Operator string
 	Right    Expression
 }
 
-func (be *BinaryExpression) TokenLiteral() string {
-	return be.Operator
-}
-
-func (be *BinaryExpression) expressionNode() {}
-
-// UnaryExpression represents a unary operation
+// UnaryExpression represents a unary expression
 type UnaryExpression struct {
 	Operator string
 	Right    Expression
 }
-
-func (ue *UnaryExpression) TokenLiteral() string {
-	return ue.Operator
-}
-
-func (ue *UnaryExpression) expressionNode() {}
 
 // CallExpression represents a function call
 type CallExpression struct {
@@ -62,84 +183,144 @@ type CallExpression struct {
 	Arguments []Expression
 }
 
-func (ce *CallExpression) TokenLiteral() string {
-	return "call"
-}
-
-func (ce *CallExpression) expressionNode() {}
-
-// MemberExpression represents accessing a member of an object
+// MemberExpression represents a member access expression
 type MemberExpression struct {
 	Object   Expression
 	Property Expression
 }
 
-func (me *MemberExpression) TokenLiteral() string {
-	return "."
-}
-
-func (me *MemberExpression) expressionNode() {}
-
-// IndexExpression represents array indexing
+// IndexExpression represents an array index expression
 type IndexExpression struct {
 	Array Expression
 	Index Expression
 }
-
-func (ie *IndexExpression) TokenLiteral() string {
-	return "[]"
-}
-
-func (ie *IndexExpression) expressionNode() {}
 
 // Identifier represents a variable name
 type Identifier struct {
 	Value string
 }
 
-func (i *Identifier) TokenLiteral() string {
-	return i.Value
-}
-
-func (i *Identifier) expressionNode() {}
-
 // NumberLiteral represents a numeric literal
 type NumberLiteral struct {
 	Value string
 }
-
-func (nl *NumberLiteral) TokenLiteral() string {
-	return nl.Value
-}
-
-func (nl *NumberLiteral) expressionNode() {}
 
 // StringLiteral represents a string literal
 type StringLiteral struct {
 	Value string
 }
 
-func (sl *StringLiteral) TokenLiteral() string {
-	return sl.Value
-}
-
-func (sl *StringLiteral) expressionNode() {}
-
 // CharLiteral represents a character literal
 type CharLiteral struct {
 	Value string
 }
 
-func (cl *CharLiteral) TokenLiteral() string {
-	return cl.Value
-}
-
-func (cl *CharLiteral) expressionNode() {}
-
 // BooleanLiteral represents a boolean literal
 type BooleanLiteral struct {
 	Value bool
 }
+
+// NullExpression represents a null expression
+type NullExpression struct{}
+
+// Token literal and node implementations
+func (p *Program) TokenLiteral() string { return "program" }
+
+func (fd *FunctionDeclaration) TokenLiteral() string { return fd.Name }
+func (fd *FunctionDeclaration) declarationNode()     {}
+
+func (vd *VariableDeclaration) TokenLiteral() string { return vd.Name }
+func (vd *VariableDeclaration) declarationNode()     {}
+
+func (td *TypedefDeclaration) TokenLiteral() string { return td.NewType }
+func (td *TypedefDeclaration) declarationNode()     {}
+
+func (cd *ClassDeclaration) TokenLiteral() string { return cd.Name }
+func (cd *ClassDeclaration) declarationNode()     {}
+
+func (ed *EnumDeclaration) TokenLiteral() string { return ed.Name }
+func (ed *EnumDeclaration) declarationNode()     {}
+
+func (nd *NamespaceDeclaration) TokenLiteral() string { return nd.Name }
+func (nd *NamespaceDeclaration) declarationNode()     {}
+
+func (td *TemplateDeclaration) TokenLiteral() string { return "template" }
+func (td *TemplateDeclaration) declarationNode()     {}
+
+func (ud *UsingDeclaration) TokenLiteral() string { return "using" }
+func (ud *UsingDeclaration) declarationNode()     {}
+
+func (pd *PreprocessorDirective) TokenLiteral() string { return pd.Directive }
+func (pd *PreprocessorDirective) declarationNode()     {}
+
+func (bs *BlockStatement) TokenLiteral() string { return "{" }
+func (bs *BlockStatement) statementNode()       {}
+
+func (es *EmptyStatement) TokenLiteral() string { return ";" }
+func (es *EmptyStatement) statementNode()       {}
+
+func (es *ExpressionStatement) TokenLiteral() string { return "expr" }
+func (es *ExpressionStatement) statementNode()       {}
+
+func (ds *DeclarationStatement) TokenLiteral() string { return "decl" }
+func (ds *DeclarationStatement) statementNode()       {}
+
+func (is *IfStatement) TokenLiteral() string { return "if" }
+func (is *IfStatement) statementNode()       {}
+
+func (fs *ForStatement) TokenLiteral() string { return "for" }
+func (fs *ForStatement) statementNode()       {}
+
+func (ws *WhileStatement) TokenLiteral() string { return "while" }
+func (ws *WhileStatement) statementNode()       {}
+
+func (dws *DoWhileStatement) TokenLiteral() string { return "do" }
+func (dws *DoWhileStatement) statementNode()       {}
+
+func (ss *SwitchStatement) TokenLiteral() string { return "switch" }
+func (ss *SwitchStatement) statementNode()       {}
+
+func (rs *ReturnStatement) TokenLiteral() string { return "return" }
+func (rs *ReturnStatement) statementNode()       {}
+
+func (bs *BreakStatement) TokenLiteral() string { return "break" }
+func (bs *BreakStatement) statementNode()       {}
+
+func (cs *ContinueStatement) TokenLiteral() string { return "continue" }
+func (cs *ContinueStatement) statementNode()       {}
+
+func (gs *GotoStatement) TokenLiteral() string { return "goto" }
+func (gs *GotoStatement) statementNode()       {}
+
+func (ae *AssignmentExpression) TokenLiteral() string { return "=" }
+func (ae *AssignmentExpression) expressionNode()      {}
+
+func (be *BinaryExpression) TokenLiteral() string { return be.Operator }
+func (be *BinaryExpression) expressionNode()      {}
+
+func (ue *UnaryExpression) TokenLiteral() string { return ue.Operator }
+func (ue *UnaryExpression) expressionNode()      {}
+
+func (ce *CallExpression) TokenLiteral() string { return "call" }
+func (ce *CallExpression) expressionNode()      {}
+
+func (me *MemberExpression) TokenLiteral() string { return "." }
+func (me *MemberExpression) expressionNode()      {}
+
+func (ie *IndexExpression) TokenLiteral() string { return "[]" }
+func (ie *IndexExpression) expressionNode()      {}
+
+func (i *Identifier) TokenLiteral() string { return i.Value }
+func (i *Identifier) expressionNode()      {}
+
+func (nl *NumberLiteral) TokenLiteral() string { return nl.Value }
+func (nl *NumberLiteral) expressionNode()      {}
+
+func (sl *StringLiteral) TokenLiteral() string { return sl.Value }
+func (sl *StringLiteral) expressionNode()      {}
+
+func (cl *CharLiteral) TokenLiteral() string { return cl.Value }
+func (cl *CharLiteral) expressionNode()      {}
 
 func (bl *BooleanLiteral) TokenLiteral() string {
 	if bl.Value {
@@ -147,90 +328,7 @@ func (bl *BooleanLiteral) TokenLiteral() string {
 	}
 	return "false"
 }
-
 func (bl *BooleanLiteral) expressionNode() {}
 
-// NullExpression represents a placeholder for parsing errors
-type NullExpression struct{}
-
-func (ne *NullExpression) TokenLiteral() string {
-	return "null"
-}
-
-func (ne *NullExpression) expressionNode() {}
-
-// ArrayLiteral represents an array literal
-type ArrayLiteral struct {
-	Elements []Expression
-}
-
-func (al *ArrayLiteral) TokenLiteral() string {
-	return "array"
-}
-
-func (al *ArrayLiteral) expressionNode() {}
-
-// NewExpression represents a new expression
-type NewExpression struct {
-	Type      string
-	Arguments []Expression
-}
-
-func (ne *NewExpression) TokenLiteral() string {
-	return "new"
-}
-
-func (ne *NewExpression) expressionNode() {}
-
-// DeleteExpression represents a delete expression
-type DeleteExpression struct {
-	Target Expression
-	Array  bool
-}
-
-func (de *DeleteExpression) TokenLiteral() string {
-	if de.Array {
-		return "delete[]"
-	}
-	return "delete"
-}
-
-func (de *DeleteExpression) expressionNode() {}
-
-// CastExpression represents a type cast
-type CastExpression struct {
-	Type       string
-	Expression Expression
-}
-
-func (ce *CastExpression) TokenLiteral() string {
-	return "cast"
-}
-
-func (ce *CastExpression) expressionNode() {}
-
-// ConditionalExpression represents a ternary conditional expression
-type ConditionalExpression struct {
-	Condition Expression
-	TrueExpr  Expression
-	FalseExpr Expression
-}
-
-func (ce *ConditionalExpression) TokenLiteral() string {
-	return "?:"
-}
-
-func (ce *ConditionalExpression) expressionNode() {}
-
-// LambdaExpression represents a lambda expression
-type LambdaExpression struct {
-	Captures   []string
-	Parameters []Parameter
-	Body       *BlockStatement
-}
-
-func (le *LambdaExpression) TokenLiteral() string {
-	return "lambda"
-}
-
-func (le *LambdaExpression) expressionNode() {}
+func (ne *NullExpression) TokenLiteral() string { return "null" }
+func (ne *NullExpression) expressionNode()      {}
