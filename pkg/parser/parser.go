@@ -930,7 +930,8 @@ func (p *Parser) parseCallExpression(function ast.Expression) ast.Expression {
 	// Current token should be '('
 	var args []ast.Expression
 	
-	p.nextToken() // Skip '('
+	// Skip '('
+	p.nextToken()
 
 	// If not immediately closing ')', there are arguments
 	if !(p.curToken.Type == lexer.TokenPunctuation && p.curToken.Literal == ")") {
