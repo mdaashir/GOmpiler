@@ -43,10 +43,31 @@ func (p *Parser) Parse() (*ast.Program, error) {
 
 	// Parse declarations until end of file
 	for p.curToken.Type != lexer.TokenEOF {
-		if decl := p.parseDeclaration(); decl != nil {
-			program.Declarations = append(program.Declarations, decl)
+		switch p.curToken.Type {
+		case lexer.TokenPreprocessor:
+			if decl := p.parsePreprocessorDirective(); decl != nil {
+				program.Declarations = append(program.Declarations, decl)
+			}
+		case lexer.TokenKeyword:
+			if decl := p.parseDeclaration(); decl != nil {
+				program.Declarations = append(program.Declarations, decl)
+			}
+		case lexer.TokenPunctuation:
+			// Skip punctuation tokens at the top level
+			p.nextToken()
+		case lexer.TokenIdentifier:
+			// Handle global function definitions that might start with a type alias or similar
+			if decl := p.parseVariableOrFunctionDeclaration(); decl != nil {
+				program.Declarations = append(program.Declarations, decl)
+			} else {
+				// Skip unexpected identifier
+				p.nextToken()
+			}
+		default:
+			// Skip unexpected tokens
+			p.addError(fmt.Sprintf("unexpected token at global scope: %s", p.curToken.Literal))
+			p.nextToken()
 		}
-		p.nextToken()
 	}
 
 	if len(p.errors) > 0 {
@@ -213,12 +234,159 @@ func (p *Parser) parsePreprocessorDirective() ast.Declaration {
 }
 
 func (p *Parser) parseVariableOrFunctionDeclaration() ast.Declaration {
-	// For now, just return a simple variable declaration
-	return &ast.VariableDeclaration{
-		Type:        "int",
-		Name:        "dummyVar",
-		ArraySize:   "",
-		Initializer: nil,
+	// Save the current position to backtrack if needed
+	// Get the type
+	typeSpec := p.curToken.Literal
+	p.nextToken()
+
+	// Check for a name
+	if p.curToken.Type != lexer.TokenIdentifier {
+		p.addError(fmt.Sprintf("expected identifier, got %s", p.curToken.Literal))
+		return nil
+	}
+
+	name := p.curToken.Literal
+	p.nextToken()
+
+	// If the next token is '(', this is a function declaration
+	if p.curToken.Type == lexer.TokenPunctuation && p.curToken.Literal == "(" {
+		p.nextToken() // Skip '('
+
+		// Parse parameters
+		var params []ast.Parameter
+
+		// If not immediately closing ')', there are parameters
+		if !(p.curToken.Type == lexer.TokenPunctuation && p.curToken.Literal == ")") {
+			for {
+				// Simple parameter parsing - just skip tokens until ',' or ')'
+				paramType := ""
+				paramName := ""
+
+				// Try to get parameter type
+				if p.curToken.Type == lexer.TokenKeyword {
+					paramType = p.curToken.Literal
+					p.nextToken()
+
+					// Check for reference/pointer
+					if p.curToken.Type == lexer.TokenOperator && (p.curToken.Literal == "&" || p.curToken.Literal == "*") {
+						paramType += p.curToken.Literal
+						p.nextToken()
+					}
+
+					// Get parameter name if available
+					if p.curToken.Type == lexer.TokenIdentifier {
+						paramName = p.curToken.Literal
+						p.nextToken()
+					}
+				} else {
+					// Skip unknown tokens until delimiter
+					for p.curToken.Type != lexer.TokenEOF &&
+						!(p.curToken.Type == lexer.TokenPunctuation &&
+							(p.curToken.Literal == "," || p.curToken.Literal == ")")) {
+						p.nextToken()
+					}
+				}
+
+				params = append(params, ast.Parameter{
+					Type: paramType,
+					Name: paramName,
+				})
+
+				// Check if we're at the end of parameters
+				if p.curToken.Type == lexer.TokenPunctuation && p.curToken.Literal == ")" {
+					break
+				}
+
+				// Skip the comma
+				if p.curToken.Type == lexer.TokenPunctuation && p.curToken.Literal == "," {
+					p.nextToken()
+				} else {
+					p.addError(fmt.Sprintf("expected ',' or ')', got %s", p.curToken.Literal))
+					return nil
+				}
+			}
+		}
+
+		p.nextToken() // Skip ')'
+
+		// Check if there's a function body
+		if p.curToken.Type == lexer.TokenPunctuation && p.curToken.Literal == "{" {
+			// Parse function body
+			body := p.parseBlockStatement()
+
+			return &ast.FunctionDeclaration{
+				Type:       typeSpec,
+				Name:       name,
+				Parameters: params,
+				Body:       body,
+			}
+		} else {
+			// This is a function prototype, skip to ';'
+			for p.curToken.Type != lexer.TokenEOF &&
+				!(p.curToken.Type == lexer.TokenPunctuation && p.curToken.Literal == ";") {
+				p.nextToken()
+			}
+
+			if p.curToken.Type == lexer.TokenPunctuation && p.curToken.Literal == ";" {
+				p.nextToken() // Skip ';'
+			}
+
+			return &ast.FunctionDeclaration{
+				Type:       typeSpec,
+				Name:       name,
+				Parameters: params,
+				Body:       nil,
+			}
+		}
+	} else {
+		// This is a variable declaration
+
+		// Check for array size
+		arraySize := ""
+		if p.curToken.Type == lexer.TokenPunctuation && p.curToken.Literal == "[" {
+			p.nextToken() // Skip '['
+
+			// Collect array size expression
+			start := p.pos
+			for p.curToken.Type != lexer.TokenEOF &&
+				!(p.curToken.Type == lexer.TokenPunctuation && p.curToken.Literal == "]") {
+				p.nextToken()
+			}
+
+			if p.pos > start {
+				arraySize = "SomeSize" // Placeholder for actual size expression
+			}
+
+			if p.curToken.Type == lexer.TokenPunctuation && p.curToken.Literal == "]" {
+				p.nextToken() // Skip ']'
+			}
+		}
+
+		// Check for initializer
+		var initializer ast.Expression
+		if p.curToken.Type == lexer.TokenOperator && p.curToken.Literal == "=" {
+			p.nextToken() // Skip '='
+
+			// Parse initializer expression (simplified for now)
+			initializer = p.parseExpression()
+		}
+
+		// Skip to semicolon
+		for p.curToken.Type != lexer.TokenEOF &&
+			!(p.curToken.Type == lexer.TokenPunctuation && p.curToken.Literal == ";") {
+			p.nextToken()
+		}
+
+		if p.curToken.Type == lexer.TokenPunctuation && p.curToken.Literal == ";" {
+			p.nextToken() // Skip ';'
+		}
+
+		return &ast.VariableDeclaration{
+			Type:        typeSpec,
+			Name:        name,
+			ArraySize:   arraySize,
+			Initializer: initializer,
+		}
 	}
 }
 
@@ -260,6 +428,80 @@ func (p *Parser) parseBlockStatement() *ast.BlockStatement {
 }
 
 func (p *Parser) parseStatement() ast.Statement {
+	switch p.curToken.Type {
+	case lexer.TokenKeyword:
+		switch p.curToken.Literal {
+		case "if":
+			return p.parseIfStatement()
+		case "for":
+			return p.parseForStatement()
+		case "while":
+			return p.parseWhileStatement()
+		case "do":
+			return p.parseDoWhileStatement()
+		case "switch":
+			return p.parseSwitchStatement()
+		case "return":
+			return p.parseReturnStatement()
+		case "break":
+			p.nextToken() // Skip 'break'
+			// Skip to semicolon
+			if p.curToken.Type == lexer.TokenPunctuation && p.curToken.Literal == ";" {
+				p.nextToken() // Skip ';'
+			}
+			return &ast.BreakStatement{}
+		case "continue":
+			p.nextToken() // Skip 'continue'
+			// Skip to semicolon
+			if p.curToken.Type == lexer.TokenPunctuation && p.curToken.Literal == ";" {
+				p.nextToken() // Skip ';'
+			}
+			return &ast.ContinueStatement{}
+		case "goto":
+			return p.parseGotoStatement()
+		case "int", "float", "double", "char", "bool", "void", "unsigned", "class", "struct", "enum", "const":
+			// Variable declaration or function prototype
+			decl := p.parseVariableOrFunctionDeclaration()
+			if decl != nil {
+				return &ast.DeclarationStatement{Declaration: decl}
+			}
+			return &ast.EmptyStatement{}
+		default:
+			// Skip unknown keyword
+			p.nextToken()
+			return &ast.EmptyStatement{}
+		}
+	case lexer.TokenPunctuation:
+		if p.curToken.Literal == "{" {
+			return p.parseBlockStatement()
+		} else if p.curToken.Literal == ";" {
+			p.nextToken() // Skip ';'
+			return &ast.EmptyStatement{}
+		}
+		// Fall through to default case
+	case lexer.TokenIdentifier:
+		// This could be an expression statement (assignment, function call, etc.)
+		stmt := &ast.ExpressionStatement{
+			Expression: p.parseExpression(),
+		}
+
+		// Skip to semicolon
+		for p.curToken.Type != lexer.TokenEOF &&
+			!(p.curToken.Type == lexer.TokenPunctuation && p.curToken.Literal == ";") {
+			p.nextToken()
+		}
+
+		if p.curToken.Type == lexer.TokenPunctuation && p.curToken.Literal == ";" {
+			p.nextToken() // Skip ';'
+		}
+
+		return stmt
+	default:
+		panic("unhandled default case")
+	}
+
+	// For any other token types, create an empty statement and advance
+	p.nextToken()
 	return &ast.EmptyStatement{}
 }
 
@@ -289,8 +531,81 @@ func (p *Parser) parseIfStatement() ast.Statement {
 }
 
 func (p *Parser) parseForStatement() ast.Statement {
+	p.nextToken() // Skip 'for'
+
+	// Create default values
+	var initialization ast.Statement
+	var condition ast.Expression
+	var increment ast.Expression
+
+	// Parse the for loop header
+	if p.curToken.Type == lexer.TokenPunctuation && p.curToken.Literal == "(" {
+		p.nextToken() // Skip '('
+
+		// Parse initialization
+		if p.curToken.Type != lexer.TokenPunctuation || p.curToken.Literal != ";" {
+			// This is a declaration or expression
+			if p.curToken.Type == lexer.TokenKeyword {
+				// Variable declaration
+				decl := p.parseVariableOrFunctionDeclaration()
+				if decl != nil {
+					initialization = &ast.DeclarationStatement{Declaration: decl}
+				}
+			} else {
+				// Expression statement
+				expr := p.parseExpression()
+				initialization = &ast.ExpressionStatement{Expression: expr}
+
+				// Skip to semicolon
+				for p.curToken.Type != lexer.TokenEOF &&
+					!(p.curToken.Type == lexer.TokenPunctuation && p.curToken.Literal == ";") {
+					p.nextToken()
+				}
+			}
+		}
+
+		// Skip semicolon after initialization
+		if p.curToken.Type == lexer.TokenPunctuation && p.curToken.Literal == ";" {
+			p.nextToken() // Skip ';'
+		} else {
+			p.addError(fmt.Sprintf("expected ';', got %s", p.curToken.Literal))
+		}
+
+		// Parse condition
+		if p.curToken.Type != lexer.TokenPunctuation || p.curToken.Literal != ";" {
+			condition = p.parseExpression()
+		}
+
+		// Skip semicolon after condition
+		if p.curToken.Type == lexer.TokenPunctuation && p.curToken.Literal == ";" {
+			p.nextToken() // Skip ';'
+		} else {
+			p.addError(fmt.Sprintf("expected ';', got %s", p.curToken.Literal))
+		}
+
+		// Parse increment
+		if p.curToken.Type != lexer.TokenPunctuation || p.curToken.Literal != ")" {
+			increment = p.parseExpression()
+		}
+
+		// Skip closing parenthesis
+		if p.curToken.Type == lexer.TokenPunctuation && p.curToken.Literal == ")" {
+			p.nextToken() // Skip ')'
+		} else {
+			p.addError(fmt.Sprintf("expected ')', got %s", p.curToken.Literal))
+		}
+	} else {
+		p.addError(fmt.Sprintf("expected '(' after 'for', got %s", p.curToken.Literal))
+	}
+
+	// Parse loop body
+	body := p.parseStatement()
+
 	return &ast.ForStatement{
-		Body: &ast.BlockStatement{Statements: []ast.Statement{}},
+		Initialization: initialization,
+		Condition:      condition,
+		Increment:      increment,
+		Body:           body,
 	}
 }
 
@@ -341,5 +656,140 @@ func (p *Parser) parseAssignmentExpression() ast.Expression {
 }
 
 func (p *Parser) parsePrimaryExpression() ast.Expression {
+	switch p.curToken.Type {
+	case lexer.TokenIdentifier:
+		identifier := &ast.Identifier{Value: p.curToken.Literal}
+		p.nextToken() // Skip identifier
+
+		// Check for function call
+		if p.curToken.Type == lexer.TokenPunctuation && p.curToken.Literal == "(" {
+			p.nextToken() // Skip '('
+
+			var args []ast.Expression
+
+			// If not immediately closing ')', there are arguments
+			if !(p.curToken.Type == lexer.TokenPunctuation && p.curToken.Literal == ")") {
+				for {
+					// Parse argument expression
+					arg := p.parseExpression()
+					args = append(args, arg)
+
+					// Check if we're at the end of arguments
+					if p.curToken.Type == lexer.TokenPunctuation && p.curToken.Literal == ")" {
+						break
+					}
+
+					// Skip the comma
+					if p.curToken.Type == lexer.TokenPunctuation && p.curToken.Literal == "," {
+						p.nextToken()
+					} else {
+						p.addError(fmt.Sprintf("expected ',' or ')', got %s", p.curToken.Literal))
+						break
+					}
+				}
+			}
+
+			p.nextToken() // Skip ')'
+
+			return &ast.CallExpression{
+				Function:  identifier,
+				Arguments: args,
+			}
+		}
+
+		// Check for member access
+		if p.curToken.Type == lexer.TokenPunctuation && p.curToken.Literal == "." {
+			p.nextToken() // Skip '.'
+
+			if p.curToken.Type != lexer.TokenIdentifier {
+				p.addError(fmt.Sprintf("expected identifier after '.', got %s", p.curToken.Literal))
+				return identifier
+			}
+
+			property := &ast.Identifier{Value: p.curToken.Literal}
+			p.nextToken() // Skip property name
+
+			return &ast.MemberExpression{
+				Object:   identifier,
+				Property: property,
+			}
+		}
+
+		// Check for arrow operator
+		if p.curToken.Type == lexer.TokenOperator && p.curToken.Literal == "->" {
+			p.nextToken() // Skip '->'
+
+			if p.curToken.Type != lexer.TokenIdentifier {
+				p.addError(fmt.Sprintf("expected identifier after '->', got %s", p.curToken.Literal))
+				return identifier
+			}
+
+			property := &ast.Identifier{Value: p.curToken.Literal}
+			p.nextToken() // Skip property name
+
+			// Create a member expression with arrow operator
+			return &ast.MemberExpression{
+				Object:   identifier,
+				Property: property,
+			}
+		}
+
+		return identifier
+
+	case lexer.TokenNumber:
+		num := &ast.NumberLiteral{Value: p.curToken.Literal}
+		p.nextToken() // Skip number
+		return num
+
+	case lexer.TokenString:
+		str := &ast.StringLiteral{Value: p.curToken.Literal}
+		p.nextToken() // Skip string
+		return str
+
+	case lexer.TokenChar:
+		char := &ast.CharLiteral{Value: p.curToken.Literal}
+		p.nextToken() // Skip char
+		return char
+
+	case lexer.TokenKeyword:
+		if p.curToken.Literal == "true" || p.curToken.Literal == "false" {
+			value := p.curToken.Literal == "true"
+			p.nextToken() // Skip boolean literal
+			return &ast.BooleanLiteral{Value: value}
+		}
+		// Fall through to default
+
+	case lexer.TokenOperator:
+		// Unary operator
+		operator := p.curToken.Literal
+		p.nextToken() // Skip operator
+
+		operand := p.parsePrimaryExpression()
+		return &ast.UnaryExpression{
+			Operator: operator,
+			Right:    operand,
+		}
+
+	case lexer.TokenPunctuation:
+		if p.curToken.Literal == "(" {
+			p.nextToken() // Skip '('
+
+			expr := p.parseExpression()
+
+			if p.curToken.Type == lexer.TokenPunctuation && p.curToken.Literal == ")" {
+				p.nextToken() // Skip ')'
+				return expr
+			} else {
+				p.addError(fmt.Sprintf("expected ')', got %s", p.curToken.Literal))
+			}
+		}
+	default:
+		panic("unhandled default case")
+	}
+
+	// If nothing else matches, create a null expression
+	if p.curToken.Type != lexer.TokenEOF {
+		p.nextToken() // Skip the current token
+	}
 	return &ast.NullExpression{}
 }
