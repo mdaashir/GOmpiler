@@ -92,7 +92,32 @@ func (p *Parser) parseStatement() *ASTNode {
 
 func (p *Parser) parsePreprocessor() *ASTNode {
 	tok := p.nextToken()
-	return &ASTNode{Type: NodeType(PREPROCESSOR), Value: tok.Value}
+	if tok.Type != PREPROCESSOR {
+		return nil
+	}
+
+	node := &ASTNode{Type: NodeType(PREPROCESSOR), Value: tok.Value}
+
+	directive := p.nextToken()
+	node.Children = append(node.Children, &ASTNode{Type: NodeType(IDENTIFIER), Value: directive.Value})
+
+	if directive.Value == "include" {
+		openTok := p.nextToken()
+		if openTok.Type == OPERATOR && (openTok.Value == "<" || openTok.Value == "\"") {
+			fileNode := &ASTNode{Type: NodeType(STRING), Value: ""}
+
+			for {
+				nextTok := p.nextToken()
+				if nextTok.Type == OPERATOR && ((openTok.Value == "<" && nextTok.Value == ">") ||
+					(openTok.Value == "\"" && nextTok.Value == "\"")) {
+					break
+				}
+				fileNode.Value += nextTok.Value
+			}
+			node.Children = append(node.Children, fileNode)
+		}
+	}
+	return node
 }
 
 func (p *Parser) parseKeyword() *ASTNode {
