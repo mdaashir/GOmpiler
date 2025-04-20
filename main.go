@@ -19,7 +19,7 @@ import (
 
 const cppHasStdFormat = false
 
-const versionString = "xyproto/go2cpp 0.4.0"
+const versionString = "mdaashir/go2cpp 0.4.0"
 
 const tupleType = "std::tuple"
 
@@ -1122,8 +1122,9 @@ func go2cpp(source string) string {
 	closingBracketNeedsASemicolon := false
 	for _, line := range strings.Split(source, "\n") {
 
-		if debugOutput {
-			fmt.Fprintf(os.Stderr, "%s\n", line)
+		_, err := fmt.Fprintf(os.Stderr, "%s\n", line)
+		if err != nil {
+			return ""
 		}
 
 		newLine := line
@@ -1255,7 +1256,10 @@ func go2cpp(source string) string {
 			} else if declarationAssignment {
 				if strings.HasPrefix(right, "[]") {
 					if !strings.Contains(right, "{") {
-						fmt.Fprintln(os.Stderr, "UNRECOGNIZED LINE: "+trimmedLine)
+						_, err := fmt.Fprintln(os.Stderr, "UNRECOGNIZED LINE: "+trimmedLine)
+						if err != nil {
+							return ""
+						}
 						//newLine = line
 
 					}
@@ -1485,7 +1489,11 @@ func main() {
 		log.Fatal(err)
 	}
 	tempFileName := tempFile.Name()
-	defer os.Remove(tempFileName)
+	defer func(name string) {
+		if err := os.Remove(name); err != nil {
+			log.Printf("Failed to remove temporary file %s: %v", name, err)
+		}
+	}(tempFileName)
 
 	// Compile the string in cppSource
 	cpp := "g++"

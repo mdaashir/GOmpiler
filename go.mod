@@ -1,3 +1,3 @@
-module github.com/xyproto/go2cpp
+module github.com/mdaashir/go2cpp
 
-go 1.10
+go 1.24

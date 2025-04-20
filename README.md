@@ -27,7 +27,7 @@ The intended use is not to convert entire existing Go programs to C++, but to he
 
 ## Installation
 
-    go install github.com/xyproto/go2cpp@latest
+    go install github.com/mdaashir/go2cpp@latest
 
 Then `~/go/bin/go2cpp` should be available (unless GOPATH points somewhere else).
 
