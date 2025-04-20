@@ -23,10 +23,11 @@ GOmpiler is a C++ compiler implemented in Go, designed to demonstrate modern com
 
 ## Building and Running
 
-### Prerequisites
+## Requirements
 
-- Go 1.16 or later
-- Git
+- Go 1.24 or later
+- LLVM toolchain (for final compilation steps)
+
 
 ### Build Instructions
 
