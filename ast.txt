@@ -1,2 +1,7 @@
 PROGRAM : Program
-  STATEMENT : #include <stdio.h>
+  PREPROCESSOR : #include
+    IDENTIFIER : <
+  EXPRESSION : stdio
+  EXPRESSION : >
+    EXPRESSION : h
+    EXPRESSION : 
