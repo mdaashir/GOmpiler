@@ -6,6 +6,37 @@ One of the goals is for the compiler to be able to compile itself.
 
 The intended use is not to convert entire existing Go programs to C++, but to help port parts of it to C++, or perhaps write programs from scratch and continually check that the program can be converted and compiled as C++.
 
+## Architecture
+
+The compiler is built as a real pipeline rather than a set of regular
+expressions over source lines:
+
+```
+source.go
+   │  pkg/lexer    -> tokens (with Go's automatic semicolon insertion)
+   │  pkg/parser   -> AST (recursive descent + precedence climbing)
+   ▼  pkg/codegen  -> C++20
+      g++          -> native executable
+```
+
+| Path | Purpose |
+| --- | --- |
+| `pkg/lexer` | Turns Go source text into a token stream. |
+| `pkg/ast` | Syntax-tree node definitions shared by every later stage. |
+| `pkg/parser` | Hand-written recursive-descent parser producing an `ast.File`. |
+| `pkg/codegen` | Lowers the AST to C++20 (runtime helpers, `cout` lowering, etc.). |
+| `cmd/go2cpp` | Command-line driver. |
+
+Build and run:
+
+    go build -o go2cpp ./cmd/go2cpp
+    ./go2cpp -S program.go      # print the generated C++20
+    ./go2cpp -o program program.go
+
+Test the front-end:
+
+    go test ./pkg/...
+
 ## Known issues
 
 * Only works with simple code samples, for now.
@@ -160,7 +191,7 @@ auto main() -> int
 ## Syntactic elements
 
 - [x] backtick quoted strings: <code>`</code> (one level deep only)
-- [ ] `iota`
+- [x] `iota`
 
 ## Keywords
 
@@ -194,17 +225,17 @@ auto main() -> int
 
 - [x] `fmt.Println`
 - [x] `fmt.Print`
-- [ ] `fmt.Printf` (partially)
-- [ ] `fmt.Sprintf`
+- [x] `fmt.Printf` (partial: `%s`, `%v`, `%d`, `%f`)
+- [x] `fmt.Sprintf`
 - [x] `strings.Contains`
 - [x] `strings.HasPrefix`
-- [ ] `strings.HasSuffix`
-- [ ] `strings.Index`
-- [ ] `strings.Join`
+- [x] `strings.HasSuffix`
+- [x] `strings.Index`
+- [x] `strings.Join`
 - [ ] `strings.NewReader`
-- [ ] `strings.Replace`
-- [ ] `strings.Split`
-- [ ] `strings.SplitN`
+- [x] `strings.Replace`
+- [x] `strings.Split`
+- [x] `strings.SplitN`
 - [x] `strings.TrimSpace`
 - [ ] All the rest
 
