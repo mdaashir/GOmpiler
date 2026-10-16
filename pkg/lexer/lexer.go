@@ -116,6 +116,7 @@ func New(input, file string) *Lexer {
 func (l *Lexer) readRune() {
 	if l.readPos >= len(l.input) {
 		l.ch = 0 // EOF
+		l.pos = l.readPos
 	} else {
 		var size int
 		l.ch, size = utf8.DecodeRuneInString(l.input[l.readPos:])
@@ -175,8 +176,7 @@ func (l *Lexer) NextToken() Token {
 			tok.Literal = l.readBlockComment()
 		} else {
 			tok.Type = TokenOperator
-			tok.Literal = string(l.ch)
-			l.readRune()
+			tok.Literal = l.readOperator()
 		}
 	case '#':
 		tok.Type = TokenPreprocessor
@@ -187,7 +187,16 @@ func (l *Lexer) NextToken() Token {
 	case '\'':
 		tok.Type = TokenChar
 		tok.Literal = l.readChar()
-	case '{', '}', '(', ')', '[', ']', ';', ',', '.', ':', '?':
+	case ':':
+		if l.peekRune() == ':' {
+			tok.Type = TokenOperator
+			tok.Literal = l.readOperator()
+		} else {
+			tok.Type = TokenPunctuation
+			tok.Literal = string(l.ch)
+			l.readRune()
+		}
+	case '{', '}', '(', ')', '[', ']', ';', ',', '.', '?':
 		tok.Type = TokenPunctuation
 		tok.Literal = string(l.ch)
 		l.readRune()

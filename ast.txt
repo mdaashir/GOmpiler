@@ -1,7 +1,0 @@
-PROGRAM : Program
-  PREPROCESSOR : #include
-    IDENTIFIER : <
-  EXPRESSION : stdio
-  EXPRESSION : >
-    EXPRESSION : h
-    EXPRESSION : 

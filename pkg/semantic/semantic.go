@@ -2,710 +2,345 @@ package semantic
 
 import (
 	"fmt"
+	"strings"
 
 	"github.com/mdaashir/GOmpiler-2/pkg/ast"
 )
 
-// Analyzer performs semantic analysis on the AST
+// Analyzer performs semantic analysis on the AST.
 type Analyzer struct {
 	errors       []string
 	scopes       []*Scope
 	currentScope *Scope
 }
 
-// Scope represents a symbol scope
+// Scope represents a symbol scope.
 type Scope struct {
 	Parent  *Scope
 	Symbols map[string]Symbol
 }
 
-// Symbol represents a symbol in the symbol table
+// Symbol represents an entry in the symbol table.
 type Symbol struct {
-	Name  string
-	Type  string
-	Kind  SymbolKind
-	Scope *Scope
+	Name   string
+	Type   string
+	Kind   SymbolKind
+	Arity  int // number of parameters, for functions
+	Scope  *Scope
+	Global bool
 }
 
-// SymbolKind represents the kind of symbol
+// SymbolKind represents the kind of a symbol.
 type SymbolKind int
 
 const (
 	VariableSymbol SymbolKind = iota
 	FunctionSymbol
 	TypeSymbol
-	NamespaceSymbol
 )
 
-// New creates a new semantic analyzer
-func New() *Analyzer {
-	globalScope := &Scope{
-		Symbols: make(map[string]Symbol),
-	}
+// builtinTypes are the primitive types this compiler understands.
+var builtinTypes = map[string]bool{
+	"void": true, "char": true, "short": true, "int": true, "long": true,
+	"unsigned": true, "signed": true, "float": true, "double": true,
+	"bool": true,
+}
 
-	return &Analyzer{
+// New creates a new semantic analyzer.
+func New() *Analyzer {
+	globalScope := &Scope{Symbols: make(map[string]Symbol)}
+	a := &Analyzer{
 		errors:       []string{},
 		scopes:       []*Scope{globalScope},
 		currentScope: globalScope,
 	}
+	a.initBuiltins()
+	return a
 }
 
-// Analyze performs semantic analysis on the AST
+// initBuiltins registers the standard stream objects this compiler supports.
+func (a *Analyzer) initBuiltins() {
+	for _, name := range []string{"std::cout", "std::cin", "std::cerr", "std::endl"} {
+		a.currentScope.Symbols[name] = Symbol{
+			Name:   name,
+			Type:   "ostream",
+			Kind:   VariableSymbol,
+			Scope:  a.currentScope,
+			Global: true,
+		}
+	}
+}
+
+// Analyze performs semantic analysis on the AST.
 func (a *Analyzer) Analyze(program *ast.Program) error {
-	// Initialize built-in types
-	a.initBuiltinTypes()
-
-	// First pass: collect declarations
-	a.collectDeclarations(program)
-
-	// Second pass: validate the AST
+	a.collectGlobals(program)
 	a.validateProgram(program)
 
 	if len(a.errors) > 0 {
 		return fmt.Errorf("semantic errors: %v", a.errors)
 	}
-
 	return nil
 }
 
-// initBuiltinTypes initializes the built-in C++ types
-func (a *Analyzer) initBuiltinTypes() {
-	builtinTypes := []string{
-		"void", "char", "short", "int", "long", "unsigned",
-		"float", "double", "bool", "size_t", "wchar_t",
-	}
-
-	for _, typeName := range builtinTypes {
-		a.currentScope.Symbols[typeName] = Symbol{
-			Name:  typeName,
-			Type:  typeName,
-			Kind:  TypeSymbol,
-			Scope: a.currentScope,
-		}
-	}
-}
-
-// collectDeclarations collects all declarations in the first pass
-func (a *Analyzer) collectDeclarations(program *ast.Program) {
+// collectGlobals registers all top-level functions and variables so that any
+// of them can be referenced from anywhere, regardless of source order.
+func (a *Analyzer) collectGlobals(program *ast.Program) {
 	for _, decl := range program.Declarations {
-		a.collectDeclaration(decl)
-	}
-}
-
-// collectDeclaration collects a single declaration
-func (a *Analyzer) collectDeclaration(decl ast.Declaration) {
-	switch d := decl.(type) {
-	case *ast.FunctionDeclaration:
-		a.collectFunctionDeclaration(d)
-	case *ast.VariableDeclaration:
-		a.collectVariableDeclaration(d)
-	case *ast.ClassDeclaration:
-		a.collectClassDeclaration(d)
-	case *ast.EnumDeclaration:
-		a.collectEnumDeclaration(d)
-	case *ast.NamespaceDeclaration:
-		a.collectNamespaceDeclaration(d)
-	case *ast.TypedefDeclaration:
-		a.collectTypedefDeclaration(d)
-	case *ast.TemplateDeclaration:
-		// Templates are complex, for now collect the inner declaration
-		if d.Declaration != nil {
-			a.collectDeclaration(d.Declaration)
-		}
-	}
-}
-
-// collectFunctionDeclaration adds a function to the symbol table
-func (a *Analyzer) collectFunctionDeclaration(fn *ast.FunctionDeclaration) {
-	if _, exists := a.currentScope.Symbols[fn.Name]; exists {
-		a.addError(fmt.Sprintf("function '%s' already declared in this scope", fn.Name))
-		return
-	}
-
-	a.currentScope.Symbols[fn.Name] = Symbol{
-		Name:  fn.Name,
-		Type:  fn.Type,
-		Kind:  FunctionSymbol,
-		Scope: a.currentScope,
-	}
-
-	if fn.Body != nil {
-		// Create a new scope for the function body
-		functionScope := &Scope{
-			Parent:  a.currentScope,
-			Symbols: make(map[string]Symbol),
-		}
-
-		// Add parameters to the function scope
-		for _, param := range fn.Parameters {
-			functionScope.Symbols[param.Name] = Symbol{
-				Name:  param.Name,
-				Type:  param.Type,
-				Kind:  VariableSymbol,
-				Scope: functionScope,
+		switch d := decl.(type) {
+		case *ast.FunctionDeclaration:
+			if existing, ok := a.currentScope.Symbols[d.Name]; ok {
+				if existing.Kind == FunctionSymbol {
+					// A prototype followed by its definition is not an error.
+					continue
+				}
+				a.addError(fmt.Sprintf("%q is already declared", d.Name))
+				continue
 			}
-		}
-
-		// Push the function scope
-		a.pushScope(functionScope)
-
-		// Analyze the function body
-		a.analyzeBlockStatement(fn.Body)
-
-		// Pop the function scope
-		a.popScope()
-	}
-}
-
-// collectVariableDeclaration adds a variable to the symbol table
-func (a *Analyzer) collectVariableDeclaration(vd *ast.VariableDeclaration) {
-	if _, exists := a.currentScope.Symbols[vd.Name]; exists {
-		a.addError(fmt.Sprintf("variable '%s' already declared in this scope", vd.Name))
-		return
-	}
-
-	a.currentScope.Symbols[vd.Name] = Symbol{
-		Name:  vd.Name,
-		Type:  vd.Type,
-		Kind:  VariableSymbol,
-		Scope: a.currentScope,
-	}
-
-	if vd.Initializer != nil {
-		// Check the initializer expression
-		a.analyzeExpression()
-	}
-}
-
-// collectClassDeclaration adds a class to the symbol table
-func (a *Analyzer) collectClassDeclaration(cd *ast.ClassDeclaration) {
-	if _, exists := a.currentScope.Symbols[cd.Name]; exists {
-		a.addError(fmt.Sprintf("class '%s' already declared in this scope", cd.Name))
-		return
-	}
-
-	a.currentScope.Symbols[cd.Name] = Symbol{
-		Name:  cd.Name,
-		Type:  cd.Name,
-		Kind:  TypeSymbol,
-		Scope: a.currentScope,
-	}
-
-	// Create a new scope for the class members
-	classScope := &Scope{
-		Parent:  a.currentScope,
-		Symbols: make(map[string]Symbol),
-	}
-
-	// Push the class scope
-	a.pushScope(classScope)
-
-	// Collect class members
-	for _, member := range cd.Members {
-		a.collectDeclaration(member)
-	}
-
-	// Pop the class scope
-	a.popScope()
-}
-
-// collectEnumDeclaration adds an enum to the symbol table
-func (a *Analyzer) collectEnumDeclaration(ed *ast.EnumDeclaration) {
-	if _, exists := a.currentScope.Symbols[ed.Name]; exists {
-		a.addError(fmt.Sprintf("enum '%s' already declared in this scope", ed.Name))
-		return
-	}
-
-	a.currentScope.Symbols[ed.Name] = Symbol{
-		Name:  ed.Name,
-		Type:  "enum",
-		Kind:  TypeSymbol,
-		Scope: a.currentScope,
-	}
-
-	// Add enum values as constants
-	for _, value := range ed.Values {
-		a.currentScope.Symbols[value] = Symbol{
-			Name:  value,
-			Type:  ed.Name,
-			Kind:  VariableSymbol,
-			Scope: a.currentScope,
+			a.declareHere(d.Name, d.Type, FunctionSymbol, len(d.Parameters))
+		case *ast.VariableDeclaration:
+			a.declare(d.Name, d.Type, VariableSymbol, 0)
 		}
 	}
 }
 
-// collectNamespaceDeclaration adds a namespace to the symbol table
-func (a *Analyzer) collectNamespaceDeclaration(nd *ast.NamespaceDeclaration) {
-	if _, exists := a.currentScope.Symbols[nd.Name]; exists {
-		// Namespaces can be reopened, so this is not an error
-		// We'll just add to the existing namespace
-	} else {
-		a.currentScope.Symbols[nd.Name] = Symbol{
-			Name:  nd.Name,
-			Type:  "namespace",
-			Kind:  NamespaceSymbol,
-			Scope: a.currentScope,
-		}
-	}
-
-	// Create a new scope for the namespace
-	namespaceScope := &Scope{
-		Parent:  a.currentScope,
-		Symbols: make(map[string]Symbol),
-	}
-
-	// Push the namespace scope
-	a.pushScope(namespaceScope)
-
-	// Collect namespace declarations
-	for _, decl := range nd.Declarations {
-		a.collectDeclaration(decl)
-	}
-
-	// Pop the namespace scope
-	a.popScope()
-}
-
-// collectTypedefDeclaration adds a typedef to the symbol table
-func (a *Analyzer) collectTypedefDeclaration(td *ast.TypedefDeclaration) {
-	if _, exists := a.currentScope.Symbols[td.NewType]; exists {
-		a.addError(fmt.Sprintf("type '%s' already declared in this scope", td.NewType))
-		return
-	}
-
-	a.currentScope.Symbols[td.NewType] = Symbol{
-		Name:  td.NewType,
-		Type:  td.OriginalType,
-		Kind:  TypeSymbol,
-		Scope: a.currentScope,
-	}
-}
-
-// validateProgram validates the entire program
 func (a *Analyzer) validateProgram(program *ast.Program) {
 	for _, decl := range program.Declarations {
-		a.validateDeclaration(decl)
+		switch d := decl.(type) {
+		case *ast.FunctionDeclaration:
+			a.validateFunction(d)
+		case *ast.VariableDeclaration:
+			a.validateGlobalVariable(d)
+		}
 	}
 }
 
-// validateDeclaration validates a declaration
-func (a *Analyzer) validateDeclaration(decl ast.Declaration) {
-	switch d := decl.(type) {
-	case *ast.FunctionDeclaration:
-		a.validateFunctionDeclaration(d)
-	case *ast.VariableDeclaration:
-		a.validateVariableDeclaration(d)
-	case *ast.ClassDeclaration:
-		a.validateClassDeclaration(d)
+func (a *Analyzer) validateFunction(fn *ast.FunctionDeclaration) {
+	if fn.Body == nil {
+		return // prototype; already collected
 	}
-}
-
-// validateFunctionDeclaration validates a function declaration
-func (a *Analyzer) validateFunctionDeclaration(fn *ast.FunctionDeclaration) {
-	// Check if the return type exists
 	if !a.isValidType(fn.Type) {
-		a.addError(fmt.Sprintf("unknown return type '%s' for function '%s'", fn.Type, fn.Name))
+		a.addError(fmt.Sprintf("unknown return type %q for function %q", fn.Type, fn.Name))
 	}
-
-	// Validate parameters
 	for _, param := range fn.Parameters {
 		if !a.isValidType(param.Type) {
-			a.addError(fmt.Sprintf("unknown parameter type '%s' in function '%s'", param.Type, fn.Name))
+			a.addError(fmt.Sprintf("unknown parameter type %q in function %q", param.Type, fn.Name))
 		}
 	}
 
-	if fn.Body != nil {
-		// Create a new scope for the function body
-		functionScope := &Scope{
-			Parent:  a.currentScope,
-			Symbols: make(map[string]Symbol),
-		}
-
-		// Add parameters to the function scope
-		for _, param := range fn.Parameters {
-			functionScope.Symbols[param.Name] = Symbol{
-				Name:  param.Name,
-				Type:  param.Type,
-				Kind:  VariableSymbol,
-				Scope: functionScope,
-			}
-		}
-
-		// Push function scope
-		a.pushScope(functionScope)
-
-		// Validate function body
-		a.validateBlockStatement(fn.Body)
-
-		// Pop function scope
-		a.popScope()
+	a.pushScope()
+	for _, param := range fn.Parameters {
+		a.declareHere(param.Name, param.Type, VariableSymbol, 0)
 	}
-}
-
-// validateVariableDeclaration validates a variable declaration
-func (a *Analyzer) validateVariableDeclaration(vd *ast.VariableDeclaration) {
-	// Check if the type exists
-	if !a.isValidType(vd.Type) {
-		a.addError(fmt.Sprintf("unknown type '%s' for variable '%s'", vd.Type, vd.Name))
-	}
-
-	if vd.Initializer != nil {
-		// Validate initializer
-		a.validateExpression(vd.Initializer)
-
-		// Check type compatibility (simplified)
-		// TODO: Implement proper type checking
-	}
-}
-
-// validateClassDeclaration validates a class declaration
-func (a *Analyzer) validateClassDeclaration(cd *ast.ClassDeclaration) {
-	// Check base classes
-	for _, baseClass := range cd.BaseClasses {
-		found := false
-
-		// Look for base class in current and parent scopes
-		scope := a.currentScope
-		for scope != nil {
-			if symbol, exists := scope.Symbols[baseClass]; exists && symbol.Kind == TypeSymbol {
-				found = true
-				break
-			}
-			scope = scope.Parent
-		}
-
-		if !found {
-			a.addError(fmt.Sprintf("unknown base class '%s' for class '%s'", baseClass, cd.Name))
-		}
-	}
-
-	// Create a new scope for class members
-	classScope := &Scope{
-		Parent:  a.currentScope,
-		Symbols: make(map[string]Symbol),
-	}
-
-	// Push class scope
-	a.pushScope(classScope)
-
-	// Validate class members
-	for _, member := range cd.Members {
-		a.validateDeclaration(member)
-	}
-
-	// Pop class scope
-	a.popScope()
-}
-
-// validateBlockStatement validates a block statement
-func (a *Analyzer) validateBlockStatement(block *ast.BlockStatement) {
-	// Create a new scope for the block
-	blockScope := &Scope{
-		Parent:  a.currentScope,
-		Symbols: make(map[string]Symbol),
-	}
-
-	// Push block scope
-	a.pushScope(blockScope)
-
-	// Validate statements in the block
-	for _, stmt := range block.Statements {
+	for _, stmt := range fn.Body.Statements {
 		a.validateStatement(stmt)
 	}
-
-	// Pop block scope
 	a.popScope()
 }
 
-// validateStatement validates a statement
+func (a *Analyzer) validateGlobalVariable(vd *ast.VariableDeclaration) {
+	if !a.isValidType(vd.Type) {
+		a.addError(fmt.Sprintf("unknown type %q for variable %q", vd.Type, vd.Name))
+	}
+	if vd.Initializer != nil {
+		a.validateExpression(vd.Initializer)
+	}
+}
+
 func (a *Analyzer) validateStatement(stmt ast.Statement) {
 	switch s := stmt.(type) {
 	case *ast.BlockStatement:
-		a.validateBlockStatement(s)
+		a.pushScope()
+		for _, inner := range s.Statements {
+			a.validateStatement(inner)
+		}
+		a.popScope()
+	case *ast.DeclarationStatement:
+		a.validateLocalDeclaration(s.Declaration)
 	case *ast.ExpressionStatement:
 		a.validateExpression(s.Expression)
-	case *ast.DeclarationStatement:
-		a.validateDeclaration(s.Declaration)
 	case *ast.IfStatement:
-		a.validateIfStatement(s)
+		a.validateExpression(s.Condition)
+		a.validateStatement(s.Consequence)
+		if s.Alternative != nil {
+			a.validateStatement(s.Alternative)
+		}
 	case *ast.ForStatement:
-		a.validateForStatement(s)
+		a.pushScope()
+		if s.Initialization != nil {
+			a.validateStatement(s.Initialization)
+		}
+		if s.Condition != nil {
+			a.validateExpression(s.Condition)
+		}
+		if s.Increment != nil {
+			a.validateExpression(s.Increment)
+		}
+		a.validateStatement(s.Body)
+		a.popScope()
 	case *ast.WhileStatement:
-		a.validateWhileStatement(s)
+		a.validateExpression(s.Condition)
+		a.validateStatement(s.Body)
 	case *ast.DoWhileStatement:
-		a.validateDoWhileStatement(s)
+		a.validateStatement(s.Body)
+		a.validateExpression(s.Condition)
 	case *ast.ReturnStatement:
-		a.validateReturnStatement(s)
+		if s.Value != nil {
+			a.validateExpression(s.Value)
+		}
+	case *ast.BreakStatement, *ast.ContinueStatement, *ast.EmptyStatement:
+		// nothing to check
 	}
 }
 
-// validateIfStatement validates an if statement
-func (a *Analyzer) validateIfStatement(stmt *ast.IfStatement) {
-	// Validate condition
-	a.validateExpression(stmt.Condition)
-
-	// Validate consequence
-	a.validateStatement(stmt.Consequence)
-
-	// Validate alternative (if exists)
-	if stmt.Alternative != nil {
-		a.validateStatement(stmt.Alternative)
+func (a *Analyzer) validateLocalDeclaration(decl ast.Declaration) {
+	vd, ok := decl.(*ast.VariableDeclaration)
+	if !ok {
+		return
 	}
+	if !a.isValidType(vd.Type) {
+		a.addError(fmt.Sprintf("unknown type %q for variable %q", vd.Type, vd.Name))
+	}
+	if vd.Initializer != nil {
+		a.validateExpression(vd.Initializer)
+	}
+	a.declareHere(vd.Name, vd.Type, VariableSymbol, 0)
 }
 
-// validateForStatement validates a for statement
-func (a *Analyzer) validateForStatement(stmt *ast.ForStatement) {
-	// Create a new scope for the for loop
-	loopScope := &Scope{
-		Parent:  a.currentScope,
-		Symbols: make(map[string]Symbol),
-	}
-
-	// Push loop scope
-	a.pushScope(loopScope)
-
-	// Validate initialization (if exists)
-	if stmt.Initialization != nil {
-		a.validateStatement(stmt.Initialization)
-	}
-
-	// Validate condition (if exists)
-	if stmt.Condition != nil {
-		a.validateExpression(stmt.Condition)
-	}
-
-	// Validate increment (if exists)
-	if stmt.Increment != nil {
-		a.validateExpression(stmt.Increment)
-	}
-
-	// Validate body
-	a.validateStatement(stmt.Body)
-
-	// Pop loop scope
-	a.popScope()
-}
-
-// validateWhileStatement validates a while statement
-func (a *Analyzer) validateWhileStatement(stmt *ast.WhileStatement) {
-	// Validate condition
-	a.validateExpression(stmt.Condition)
-
-	// Create a new scope for the while loop
-	loopScope := &Scope{
-		Parent:  a.currentScope,
-		Symbols: make(map[string]Symbol),
-	}
-
-	// Push loop scope
-	a.pushScope(loopScope)
-
-	// Validate body
-	a.validateStatement(stmt.Body)
-
-	// Pop loop scope
-	a.popScope()
-}
-
-// validateDoWhileStatement validates a do-while statement
-func (a *Analyzer) validateDoWhileStatement(stmt *ast.DoWhileStatement) {
-	// Create a new scope for the do-while loop
-	loopScope := &Scope{
-		Parent:  a.currentScope,
-		Symbols: make(map[string]Symbol),
-	}
-
-	// Push loop scope
-	a.pushScope(loopScope)
-
-	// Validate body
-	a.validateStatement(stmt.Body)
-
-	// Pop loop scope
-	a.popScope()
-
-	// Validate condition
-	a.validateExpression(stmt.Condition)
-}
-
-// validateReturnStatement validates a return statement
-func (a *Analyzer) validateReturnStatement(stmt *ast.ReturnStatement) {
-	if stmt.Value != nil {
-		a.validateExpression(stmt.Value)
-
-		// TODO: Check if return type matches function return type
-	}
-}
-
-// validateExpression validates an expression
 func (a *Analyzer) validateExpression(expr ast.Expression) {
 	switch e := expr.(type) {
-	case *ast.AssignmentExpression:
-		a.validateAssignmentExpression(e)
-	case *ast.BinaryExpression:
-		a.validateBinaryExpression(e)
-	case *ast.UnaryExpression:
-		a.validateUnaryExpression(e)
-	case *ast.CallExpression:
-		a.validateCallExpression(e)
-	case *ast.MemberExpression:
-		a.validateMemberExpression(e)
-	case *ast.IndexExpression:
-		a.validateIndexExpression(e)
+	case nil:
+		return
 	case *ast.Identifier:
 		a.validateIdentifier(e)
+	case *ast.AssignmentExpression:
+		if !isLValue(e.Left) {
+			a.addError(fmt.Sprintf("left side of %q is not assignable", e.Operator))
+		}
+		a.validateExpression(e.Left)
+		a.validateExpression(e.Right)
+	case *ast.BinaryExpression:
+		a.validateExpression(e.Left)
+		a.validateExpression(e.Right)
+	case *ast.UnaryExpression:
+		if e.Operator == "++" || e.Operator == "--" {
+			if !isLValue(e.Right) {
+				a.addError(fmt.Sprintf("operand of %q is not assignable", e.Operator))
+			}
+		}
+		a.validateExpression(e.Right)
+	case *ast.CallExpression:
+		a.validateCall(e)
+	case *ast.MemberExpression:
+		a.validateExpression(e.Object)
+		a.validateExpression(e.Property)
+	case *ast.IndexExpression:
+		a.validateExpression(e.Array)
+		a.validateExpression(e.Index)
 	}
 }
 
-// validateAssignmentExpression validates an assignment expression
-func (a *Analyzer) validateAssignmentExpression(expr *ast.AssignmentExpression) {
-	// Validate left-hand side (must be an l-value)
-	a.validateExpression(expr.Left)
-
-	// Validate right-hand side
-	a.validateExpression(expr.Right)
-
-	// TODO: Check type compatibility
-}
-
-// validateBinaryExpression validates a binary expression
-func (a *Analyzer) validateBinaryExpression(expr *ast.BinaryExpression) {
-	// Validate left and right operands
-	a.validateExpression(expr.Left)
-	a.validateExpression(expr.Right)
-
-	// TODO: Check operator validity and type compatibility
-}
-
-// validateUnaryExpression validates a unary expression
-func (a *Analyzer) validateUnaryExpression(expr *ast.UnaryExpression) {
-	// Validate operand
-	a.validateExpression(expr.Right)
-
-	// TODO: Check operator validity and type compatibility
-}
-
-// validateCallExpression validates a function call
-func (a *Analyzer) validateCallExpression(expr *ast.CallExpression) {
-	// Validate function expression
-	a.validateExpression(expr.Function)
-
-	// Validate arguments
-	for _, arg := range expr.Arguments {
+func (a *Analyzer) validateCall(call *ast.CallExpression) {
+	for _, arg := range call.Arguments {
 		a.validateExpression(arg)
 	}
 
-	// TODO: Check if function exists and argument types match parameters
-}
-
-// validateMemberExpression validates a member access expression
-func (a *Analyzer) validateMemberExpression(expr *ast.MemberExpression) {
-	// Validate object
-	a.validateExpression(expr.Object)
-
-	// Validate property
-	a.validateExpression(expr.Property)
-
-	// TODO: Check if member exists in the object's type
-}
-
-// validateIndexExpression validates an array index expression
-func (a *Analyzer) validateIndexExpression(expr *ast.IndexExpression) {
-	// Validate array
-	a.validateExpression(expr.Array)
-
-	// Validate index
-	a.validateExpression(expr.Index)
-
-	// TODO: Check if index is numeric and array is indexable
-}
-
-// validateIdentifier checks if an identifier is declared
-func (a *Analyzer) validateIdentifier(expr *ast.Identifier) {
-	// Look for the identifier in current and parent scopes
-	found := false
-	scope := a.currentScope
-
-	for scope != nil {
-		if _, exists := scope.Symbols[expr.Value]; exists {
-			found = true
-			break
-		}
-		scope = scope.Parent
+	id, ok := call.Function.(*ast.Identifier)
+	if !ok {
+		a.validateExpression(call.Function)
+		return
 	}
-
+	sym, found := a.lookup(id.Value)
 	if !found {
-		a.addError(fmt.Sprintf("undefined identifier '%s'", expr.Value))
+		a.addError(fmt.Sprintf("call to undefined function %q", id.Value))
+		return
+	}
+	if sym.Kind != FunctionSymbol {
+		a.addError(fmt.Sprintf("%q is not a function", id.Value))
+		return
+	}
+	if len(call.Arguments) != sym.Arity {
+		a.addError(fmt.Sprintf("function %q expects %d argument(s), got %d",
+			id.Value, sym.Arity, len(call.Arguments)))
 	}
 }
 
-// analyzeBlockStatement analyzes a block statement during the collection phase
-func (a *Analyzer) analyzeBlockStatement(block *ast.BlockStatement) {
-	// Create a new scope for the block
-	blockScope := &Scope{
-		Parent:  a.currentScope,
-		Symbols: make(map[string]Symbol),
-	}
-
-	// Push block scope
-	a.pushScope(blockScope)
-
-	// Analyze statements in the block
-	for _, stmt := range block.Statements {
-		a.analyzeStatement(stmt)
-	}
-
-	// Pop block scope
-	a.popScope()
-}
-
-// analyzeStatement analyzes a statement during the collection phase
-func (a *Analyzer) analyzeStatement(stmt ast.Statement) {
-	switch s := stmt.(type) {
-	case *ast.BlockStatement:
-		a.analyzeBlockStatement(s)
-	case *ast.DeclarationStatement:
-		a.collectDeclaration(s.Declaration)
-	case *ast.ExpressionStatement:
-		a.analyzeExpression()
+func (a *Analyzer) validateIdentifier(expr *ast.Identifier) {
+	if _, found := a.lookup(expr.Value); !found {
+		a.addError(fmt.Sprintf("undefined identifier %q", expr.Value))
 	}
 }
 
-// analyzeExpression analyzes an expression during the collection phase
-func (a *Analyzer) analyzeExpression() {
-	// Simplified implementation
-}
-
-// isValidType checks if a type is valid in the current scope
+// isValidType reports whether a type specifier names a known type.
 func (a *Analyzer) isValidType(typeName string) bool {
-	// TODO: Implement proper type checking with templates, pointers, etc.
-
-	// For now, check if the type exists in any scope
-	scope := a.currentScope
-	for scope != nil {
-		if symbol, exists := scope.Symbols[typeName]; exists && symbol.Kind == TypeSymbol {
-			return true
+	normalized := strings.TrimSpace(typeName)
+	normalized = strings.TrimRight(normalized, "*& ")
+	normalized = strings.TrimSpace(normalized)
+	if normalized == "" {
+		return false
+	}
+	for _, word := range strings.Fields(normalized) {
+		switch word {
+		case "const", "static", "extern", "inline", "register", "volatile":
+			continue
 		}
-		scope = scope.Parent
+		if !builtinTypes[word] {
+			return false
+		}
 	}
-
-	// Handle built-in types
-	builtinTypes := map[string]bool{
-		"void": true, "char": true, "short": true, "int": true, "long": true,
-		"unsigned": true, "float": true, "double": true, "bool": true,
-		"size_t": true, "wchar_t": true,
-	}
-
-	return builtinTypes[typeName]
+	return true
 }
 
-// pushScope pushes a new scope onto the scope stack
-func (a *Analyzer) pushScope(scope *Scope) {
+func isLValue(expr ast.Expression) bool {
+	switch e := expr.(type) {
+	case *ast.Identifier:
+		return true
+	case *ast.MemberExpression:
+		return true
+	case *ast.IndexExpression:
+		return true
+	case *ast.UnaryExpression:
+		return e.Operator == "*"
+	}
+	return false
+}
+
+func (a *Analyzer) lookup(name string) (Symbol, bool) {
+	for scope := a.currentScope; scope != nil; scope = scope.Parent {
+		if sym, ok := scope.Symbols[name]; ok {
+			return sym, true
+		}
+	}
+	return Symbol{}, false
+}
+
+func (a *Analyzer) declare(name, typeName string, kind SymbolKind, arity int) {
+	if _, exists := a.currentScope.Symbols[name]; exists {
+		a.addError(fmt.Sprintf("%q is already declared", name))
+		return
+	}
+	a.declareHere(name, typeName, kind, arity)
+}
+
+func (a *Analyzer) declareHere(name, typeName string, kind SymbolKind, arity int) {
+	if _, exists := a.currentScope.Symbols[name]; exists {
+		a.addError(fmt.Sprintf("%q is already declared", name))
+		return
+	}
+	a.currentScope.Symbols[name] = Symbol{
+		Name:  name,
+		Type:  typeName,
+		Kind:  kind,
+		Arity: arity,
+		Scope: a.currentScope,
+	}
+}
+
+func (a *Analyzer) pushScope() {
+	scope := &Scope{Parent: a.currentScope, Symbols: make(map[string]Symbol)}
 	a.scopes = append(a.scopes, scope)
 	a.currentScope = scope
 }
 
-// popScope pops the current scope from the scope stack
 func (a *Analyzer) popScope() {
 	if len(a.scopes) > 1 {
 		a.scopes = a.scopes[:len(a.scopes)-1]
@@ -713,7 +348,6 @@ func (a *Analyzer) popScope() {
 	}
 }
 
-// addError adds an error message to the error list
 func (a *Analyzer) addError(msg string) {
 	a.errors = append(a.errors, msg)
 }

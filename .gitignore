@@ -27,3 +27,10 @@ go.work.sum
 
 # idea
 .idea
+
+# Compiler build artifacts
+gompiler
+gompiler.exe
+a.out
+*.s
+*.o
