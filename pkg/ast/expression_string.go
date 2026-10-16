@@ -4,6 +4,10 @@ import "fmt"
 
 // String methods for all expression types
 
+func (be *BinaryExpression) String() string {
+	return fmt.Sprintf("(%v %s %v)", be.Left, be.Operator, be.Right)
+}
+
 func (ae *AssignmentExpression) String() string {
 	return fmt.Sprintf("(%v %s %v)", ae.Left, ae.Operator, ae.Right)
 }

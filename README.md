@@ -1,104 +1,119 @@
-# GOmpiler - A C++ Compiler Written in Go
+# GOmpiler — a C++ compiler written in Go
 
-GOmpiler is a C++ compiler implemented in Go, designed to demonstrate modern compiler construction techniques. It features a complete compilation pipeline including lexical analysis, parsing, semantic analysis, IR generation, optimization, and linking.
+GOmpiler compiles a single C++ source file to a native x86-64 executable. It is
+a complete, working pipeline rather than a sketch: source text is tokenized,
+parsed into an AST, checked, lowered to x86-64 assembly, and assembled and
+linked into a Linux ELF binary.
 
-## Features
-
-- Lexical analysis with comprehensive C++ token support
-- Recursive descent parser generating an Abstract Syntax Tree (AST)
-- Semantic analysis for type checking and scope resolution
-- Intermediate Representation (IR) generation
-- Basic optimization passes
-- ELF binary generation with symbol resolution and relocation
-
-## Project Structure
-
-- `lexer.go`: Tokenizes source code into a stream of tokens
-- `parser.go`: Constructs Abstract Syntax Tree from tokens
-- `semantic.go`: Performs semantic analysis and type checking
-- `ir_gen.go`: Generates intermediate representation
-- `optimizer.go`: Implements optimization passes
-- `linker.go`: Handles symbol resolution and generates executables
-- `main.go`: Program entry point and file handling
-
-## Building and Running
+```
+source.cpp
+   │  lexer      -> tokens
+   │  parser     -> AST
+   │  semantic   -> symbol/scope + arity checks
+   │  codegen    -> x86-64 assembly (GNU as, AT&T syntax)
+   ▼  as + ld    -> static ELF executable
+```
 
 ## Requirements
 
-- Go 1.24 or later
-- LLVM toolchain (for final compilation steps)
+- **Go 1.24 or later** to build the compiler.
+- **GNU binutils (`as`, `ld`)** to assemble and link the output. On Linux these
+  are normally already installed. On Windows — where they usually are not — the
+  compiler automatically runs them through **WSL** instead.
 
+No C++ compiler, LLVM installation, or libc is required: generated programs use
+Linux syscalls directly.
 
-### Build Instructions
-
-1. Clone the repository:
-
-```bash
-git clone https://github.com/mdaashir/GOmpiler.git
-cd GOmpiler
-```
-
-2. Build the compiler:
+## Building
 
 ```bash
-go build -o gompiler
+go build -o gompiler .
 ```
 
-### Usage
-
-Compile a C++ source file:
+## Usage
 
 ```bash
 ./gompiler input.cpp -o output
 ```
 
-Example with sample.c:
+Flags:
+
+| Flag | Meaning |
+| --- | --- |
+| `-o, --output` | Output file name (default `a.out`) |
+| `-O, --optimize` | Enable constant folding of literal expressions |
+
+Generated executables are Linux ELF binaries. On Windows, run them through WSL
+(for example `wsl -e ./output`).
+
+### Example
 
 ```bash
-./gompiler sample.c -o program
+./gompiler examples/hello.cpp -o hello
+wsl -e ./hello      # on Windows;  ./hello  on Linux
 ```
 
-## Implementation Details
+```
+Hello, World!
+Result is greater than 25: 30
+Counting down: 5 4 3 2 1
+```
 
-### Lexer
+## Supported language
 
-The lexer performs token recognition using deterministic finite automata (DFA) principles. It handles:
+The compiler deliberately supports a focused, correct subset of C++ rather than
+a broad, half-working surface.
 
-- Keywords
-- Identifiers
-- Literals (numbers, strings)
-- Operators and punctuation
+**Supported**
 
-### Parser
+- Preprocessor lines and `using namespace ...;` are accepted and ignored.
+- Global and local variables of the built-in arithmetic types (`int`, `char`,
+  `long`, `unsigned`, `bool`, ...), with or without initializers.
+- Functions: prototypes and definitions, parameters, recursion, return values.
+- Expressions: `+ - * / %`, `< > <= >= == !=`, `&&`, `||` (short-circuiting),
+  unary `- ! ~`, `++`/`--`, assignment (`=`, `+=`, `-=`, `*=`, `/=`, `%=`),
+  function calls, qualified names (`std::cout`), and parentheses with correct
+  precedence and associativity.
+- Statements: blocks, `if`/`else`, `for`, `while`, `do`/`while`, `switch`
+  (lowered to an `if`/`else` chain), `break`, `continue`, `return`.
+- Output with `std::cout << ... << std::endl` for string literals, integers,
+  and character literals.
 
-Implements a recursive descent parser that:
+**Not supported** (reported as a clear error, never silently miscompiled)
 
-- Constructs an AST
-- Handles operator precedence
-- Supports C++ grammar constructs
+- Classes, structs, enums, namespaces, templates, and `typedef`.
+- Arrays and pointer/member access (`a[i]`, `obj.field`).
+- Floating point, `new`/`delete`, exceptions, and the rest of the standard
+  library beyond `cout`/`endl`.
+- `switch` fallthrough.
 
-### Semantic Analyzer
+Note that `switch` is handled by lowering it to an equivalent `if`/`else` chain,
+so `break` terminates the enclosing case as expected.
 
-- Type checking
-- Scope management
-- Symbol table construction
+## Project structure
 
-### IR Generator
+| Path | Purpose |
+| --- | --- |
+| `pkg/lexer` | Turns source text into a token stream. |
+| `pkg/ast` | AST node definitions used by every later stage. |
+| `pkg/parser` | Precedence-climbing recursive-descent parser producing an AST. |
+| `pkg/semantic` | Scope and symbol resolution, arity and type-usage checks. |
+| `pkg/codegen` | Lowers the AST to x86-64 assembly, including a small runtime for `cout`. |
+| `pkg/compiler` | Drives the pipeline and invokes `as`/`ld` (directly, or via WSL). |
+| `cmd` | Cobra command-line interface. |
+| `examples` | Sample C++ programs. |
 
-- Generates intermediate code
-- Performs basic optimizations
+## Tests
 
-### Linker
+```bash
+go test ./...
+```
 
-- Symbol resolution
-- Section layout
-- Relocation processing
-- ELF binary generation
-
-## Contributing
-
-Contributions are welcome! Please feel free to submit a Pull Request.
+Unit tests cover the lexer, parser, semantic analyzer, and code generator. The
+`pkg/compiler` test compiles a program end to end and verifies that the output is
+a valid ELF file (it is skipped automatically if no assembler/linker is
+available).
 
 ## License
 
-This project is licensed under the MIT License - see the LICENSE file for details.
+This project is licensed under the MIT License — see the LICENSE file for details.
