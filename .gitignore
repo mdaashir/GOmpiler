@@ -8,3 +8,4 @@ main
 main.cpp
 output.cpp
 .idea
+.buildtmp
