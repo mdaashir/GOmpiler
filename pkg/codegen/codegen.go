@@ -28,6 +28,8 @@ type Generator struct {
 	needHasSuffix  bool
 	needTrimSpace  bool
 	needSplit      bool
+	needIndex      bool
+	needReplace    bool
 	needFmtSprintf bool
 	needPrintf     bool
 	needStrconv    bool
@@ -1119,9 +1121,18 @@ func (g *Generator) emitStrings(sel string, c *ast.CallExpr) string {
 	case "Split":
 		g.needSplit = true
 		return "stringsSplit(" + args + ")"
+	case "SplitN":
+		g.needSplit = true
+		return "stringsSplitN(" + args + ")"
 	case "Join":
 		g.needSplit = true
 		return "stringsJoin(" + args + ")"
+	case "Index":
+		g.needIndex = true
+		return "stringsIndex(" + args + ")"
+	case "Replace":
+		g.needReplace = true
+		return "stringsReplace(" + args + ")"
 	}
 	g.fail("unsupported strings.%s", sel)
 	return "/*?*/"
@@ -1247,6 +1258,12 @@ func (g *Generator) preamble() string {
 	if g.needSplit {
 		b.WriteString(helperSplit)
 	}
+	if g.needIndex {
+		b.WriteString(helperIndex)
+	}
+	if g.needReplace {
+		b.WriteString(helperReplace)
+	}
 	if g.needFmtSprintf {
 		b.WriteString(helperFmtSprintf)
 	}
@@ -1320,6 +1337,38 @@ inline std::vector<std::string> stringsSplit(const std::string& s, const std::st
 inline std::string stringsJoin(const std::vector<std::string>& parts, const std::string& sep) {
     std::string out;
     for (size_t i = 0; i < parts.size(); i++) { if (i) out += sep; out += parts[i]; }
+    return out;
+}
+inline std::vector<std::string> stringsSplitN(const std::string& s, const std::string& sep, int n) {
+    std::vector<std::string> out;
+    if (n <= 0) { out.push_back(s); return out; }
+    if (sep.empty()) {
+        for (char ch : s) { if ((int)out.size() == n) { out.back() += ch; } else { out.push_back(std::string(1, ch)); } }
+        return out;
+    }
+    size_t start = 0, pos; int c = 1;
+    while (c < n && (pos = s.find(sep, start)) != std::string::npos) {
+        out.push_back(s.substr(start, pos - start)); start = pos + sep.size(); c++;
+    }
+    out.push_back(s.substr(start));
+    return out;
+}
+`
+
+const helperIndex = `
+inline int stringsIndex(const std::string& h, const std::string& n) {
+    auto p = h.find(n);
+    return p == std::string::npos ? -1 : static_cast<int>(p);
+}
+`
+
+const helperReplace = `
+inline std::string stringsReplace(const std::string& s, const std::string& oldS, const std::string& newS, int n) {
+    if (oldS.empty() || n == 0) return s;
+    std::string out = s; std::string::size_type pos = 0; int c = 0;
+    while ((n < 0 || c < n) && (pos = out.find(oldS, pos)) != std::string::npos) {
+        out.replace(pos, oldS.size(), newS); pos += newS.size(); c++;
+    }
     return out;
 }
 `
