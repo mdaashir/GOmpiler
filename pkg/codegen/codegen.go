@@ -22,6 +22,8 @@ type Generator struct {
 	structFields map[string][]string
 	aliases      map[string]ast.Expr
 	types        map[string]ast.Expr
+	methods      map[string]methodInfo
+	ptrVars      map[string]bool
 
 	needContains   bool
 	needHasPrefix  bool
@@ -44,6 +46,12 @@ type Generator struct {
 	err        error
 }
 
+// methodInfo describes a method declared with a receiver.
+type methodInfo struct {
+	recvType string // bare type name, e.g. "Counter"
+	ptr      bool   // pointer receiver
+}
+
 // Generate compiles a parsed file to C++ source text.
 func Generate(f *ast.File) (string, error) {
 	g := &Generator{
@@ -51,6 +59,8 @@ func Generate(f *ast.File) (string, error) {
 		structFields: map[string][]string{},
 		aliases:      map[string]ast.Expr{},
 		types:        map[string]ast.Expr{},
+		methods:      map[string]methodInfo{},
+		ptrVars:      map[string]bool{},
 	}
 	g.collectTypes(f)
 	g.emitDecls(f.Decls)
@@ -70,6 +80,12 @@ func (g *Generator) fail(format string, args ...interface{}) {
 
 func (g *Generator) collectTypes(f *ast.File) {
 	for _, d := range f.Decls {
+		if fd, ok := d.(*ast.FuncDecl); ok && fd.Recv != nil && len(fd.Recv.List) > 0 {
+			rf := fd.Recv.List[0]
+			name, ptr := baseTypeName(rf.Type)
+			g.methods[fd.Name] = methodInfo{recvType: name, ptr: ptr}
+			continue
+		}
 		gd, ok := d.(*ast.GenDecl)
 		if !ok || gd.Tok != "type" {
 			continue
@@ -88,6 +104,21 @@ func (g *Generator) collectTypes(f *ast.File) {
 			}
 		}
 	}
+}
+
+// baseTypeName returns the bare type name and whether it is a pointer type.
+func baseTypeName(t ast.Expr) (string, bool) {
+	switch tt := t.(type) {
+	case *ast.Ident:
+		return tt.Name, false
+	case *ast.StarExpr:
+		n, _ := baseTypeName(tt.X)
+		return n, true
+	case *ast.PtrType:
+		n, _ := baseTypeName(tt.Elem)
+		return n, true
+	}
+	return "unknown", false
 }
 
 // --------------------------------------------------------------- writing
@@ -201,13 +232,23 @@ func (g *Generator) zeroValue(e ast.Expr) string {
 // ------------------------------------------------------------------ decls
 
 func (g *Generator) emitDecls(decls []ast.Decl) {
-	// Forward declarations for functions, so definition order does not matter.
+	// 1. Type declarations first, so prototypes and bodies can name them.
 	for _, d := range decls {
-		if fd, ok := d.(*ast.FuncDecl); ok && fd.Recv == nil && fd.Name != "main" {
+		if gd, ok := d.(*ast.GenDecl); ok && gd.Tok == "type" {
+			g.emitGenDecl(gd, true)
+		}
+	}
+	// 2. Forward declarations for functions and methods.
+	for _, d := range decls {
+		if fd, ok := d.(*ast.FuncDecl); ok && !(fd.Recv == nil && fd.Name == "main") {
 			g.emitFuncProto(fd)
 		}
 	}
+	// 3. Bodies, variables and constants (types already emitted).
 	for _, d := range decls {
+		if gd, ok := d.(*ast.GenDecl); ok && gd.Tok == "type" {
+			continue
+		}
 		g.emitDecl(d)
 	}
 }
@@ -219,10 +260,26 @@ func (g *Generator) emitFuncProto(fd *ast.FuncDecl) {
 func (g *Generator) funcSignature(fd *ast.FuncDecl) string {
 	params := g.emitParams(fd.Type.Params)
 	ret := g.resultType(fd.Type.Results)
-	if fd.Name == "main" {
+	if fd.Recv == nil && fd.Name == "main" {
 		return "auto main() -> int"
 	}
-	return fmt.Sprintf("auto %s(%s) -> %s", fd.Name, params, ret)
+	name := fd.Name
+	if fd.Recv != nil && len(fd.Recv.List) > 0 {
+		rf := fd.Recv.List[0]
+		recvType := g.cppType(rf.Type)
+		recvName := "self"
+		if len(rf.Names) > 0 {
+			recvName = rf.Names[0]
+		}
+		base, _ := baseTypeName(rf.Type)
+		name = base + "_" + fd.Name
+		if params != "" {
+			params = recvType + " " + recvName + ", " + params
+		} else {
+			params = recvType + " " + recvName
+		}
+	}
+	return fmt.Sprintf("auto %s(%s) -> %s", name, params, ret)
 }
 
 func (g *Generator) resultType(results []*ast.Field) string {
@@ -288,7 +345,14 @@ func (g *Generator) emitFunc(fd *ast.FuncDecl) {
 	g.writeln("{")
 	g.indent++
 	g.curResults = fd.Type.Results
-	if fd.Name == "main" {
+	if fd.Recv != nil && len(fd.Recv.List) > 0 {
+		rf := fd.Recv.List[0]
+		_, ptr := baseTypeName(rf.Type)
+		if len(rf.Names) > 0 {
+			g.ptrVars[rf.Names[0]] = ptr
+		}
+	}
+	if fd.Recv == nil && fd.Name == "main" {
 		g.emitStmts(fd.Body.List)
 		g.writeln("return 0;")
 	} else {
@@ -545,6 +609,9 @@ func (g *Generator) emitDefine(a *ast.AssignStmt) {
 		} else {
 			g.writeln("auto %s = %s;", id.Name, rhs)
 		}
+		if isPointerExpr(a.Rhs[i]) {
+			g.ptrVars[id.Name] = true
+		}
 		g.recordTypeExpr(id.Name, a.Rhs[i])
 	}
 }
@@ -722,6 +789,20 @@ func isStringLit(e ast.Expr) bool {
 	return ok && bl.Kind == "STRING"
 }
 
+// isPointerExpr reports whether an expression produces a pointer (`&T{...}` or
+// `new(T)`).
+func isPointerExpr(e ast.Expr) bool {
+	switch t := e.(type) {
+	case *ast.UnaryExpr:
+		return t.Op == "&"
+	case *ast.CallExpr:
+		if id, ok := t.Fun.(*ast.Ident); ok {
+			return id.Name == "new"
+		}
+	}
+	return false
+}
+
 func (g *Generator) isMapExpr(e ast.Expr) bool {
 	id, ok := e.(*ast.Ident)
 	if !ok {
@@ -872,6 +953,9 @@ func (g *Generator) emitExpr(e ast.Expr) string {
 	case *ast.StarExpr:
 		return "(*" + g.emitExpr(t.X) + ")"
 	case *ast.SelectorExpr:
+		if id, ok := t.X.(*ast.Ident); ok && g.ptrVars[id.Name] {
+			return id.Name + "->" + t.Sel
+		}
 		return g.emitExpr(t.X) + "." + t.Sel
 	case *ast.IndexExpr:
 		return fmt.Sprintf("%s[%s]", g.emitExpr(t.X), g.emitExpr(t.Index))
@@ -965,6 +1049,25 @@ func (g *Generator) emitCall(c *ast.CallExpr) string {
 			case "strconv":
 				return g.emitStrconv(sel.Sel, c)
 			}
+		}
+	}
+	// method calls: x.M(...) where M has a receiver declared in this file.
+	if sel, ok := c.Fun.(*ast.SelectorExpr); ok {
+		if mi, ok := g.methods[sel.Sel]; ok {
+			arg := g.emitExpr(sel.X)
+			if id, ok := sel.X.(*ast.Ident); ok {
+				isPtr := g.ptrVars[id.Name]
+				if mi.ptr && !isPtr {
+					arg = "&" + id.Name
+				} else if !mi.ptr && isPtr {
+					arg = "(*" + id.Name + ")"
+				}
+			}
+			parts := []string{arg}
+			for _, a := range c.Args {
+				parts = append(parts, g.emitExpr(a))
+			}
+			return fmt.Sprintf("%s_%s(%s)", mi.recvType, sel.Sel, strings.Join(parts, ", "))
 		}
 	}
 	// function value call
@@ -1196,6 +1299,12 @@ func (g *Generator) emitComposite(c *ast.CompositeLit) string {
 	case *ast.Ident:
 		var elts []string
 		for _, e := range c.Elts {
+			if kv, ok := e.(*ast.KeyValueExpr); ok {
+				if name, ok := kv.Key.(*ast.Ident); ok && !g.structNames[kv.Key.(*ast.Ident).Name] {
+					elts = append(elts, "."+name.Name+" = "+g.emitExpr(kv.Value))
+					continue
+				}
+			}
 			elts = append(elts, g.emitExpr(e))
 		}
 		if g.structNames[t.Name] || g.isTypeName(t.Name) {
