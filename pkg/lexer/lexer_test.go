@@ -106,7 +106,7 @@ func TestOperators(t *testing.T) {
 			ops = append(ops, tk.Literal)
 		}
 	}
-	// :=, <<, ; 
+	// :=, <<, ;
 	want := map[string]bool{":=": true, "<<": true, ";": true}
 	for _, op := range ops {
 		if !want[op] {
