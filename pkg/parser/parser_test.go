@@ -67,3 +67,22 @@ func TestParseAllTestcases(t *testing.T) {
 		})
 	}
 }
+
+// TestParseErrorReported checks that malformed input yields an error rather
+// than an unrecovered panic.
+func TestParseErrorReported(t *testing.T) {
+	for _, src := range []string{
+		"package main\nfunc main() { x := }\n",
+		"package main\nfunc main() { if\n",
+		"package\n",
+		"package main\ntype T struct { X \n",
+	} {
+		toks, err := lexer.New(src).Scan()
+		if err != nil {
+			continue // lexer rejected it, which is also acceptable
+		}
+		if _, err := New(toks).Parse(); err == nil {
+			t.Errorf("expected a parse error for %q", src)
+		}
+	}
+}

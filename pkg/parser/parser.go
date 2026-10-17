@@ -1,8 +1,9 @@
 // Package parser builds an ast.File from a token stream produced by pkg/lexer.
 //
 // It is a hand-written recursive-descent parser with precedence climbing for
-// binary expressions. Errors are raised via panic and recovered at the top
-// level so the recursive helpers stay readable.
+// binary expressions. Errors are recorded on the parser (a "sticky" error) and
+// every recursive helper returns early once one is set, so no panic/recover is
+// needed.
 package parser
 
 import (
@@ -20,14 +21,14 @@ type Parser struct {
 	// `{` must not be taken as the start of a composite literal of a bare type
 	// name (mirroring the restriction in the Go spec).
 	inControlHeader bool
+	// err is the first error encountered. Once set, parsing unwinds.
+	err error
 }
 
 // New returns a Parser over the given tokens.
 func New(toks []lexer.Token) *Parser {
 	return &Parser{toks: toks}
 }
-
-type parseError struct{ msg string }
 
 // ---------------------------------------------------------------- token helpers
 
@@ -76,7 +77,9 @@ func (p *Parser) expect(lit string) lexer.Token {
 }
 
 func (p *Parser) fail(format string, args ...interface{}) {
-	panic(parseError{fmt.Sprintf("%d:%d: %s", p.cur().Line, p.cur().Col, fmt.Sprintf(format, args...))})
+	if p.err == nil {
+		p.err = fmt.Errorf("%d:%d: %s", p.cur().Line, p.cur().Col, fmt.Sprintf(format, args...))
+	}
 }
 
 func (p *Parser) semi() {
@@ -88,27 +91,24 @@ func (p *Parser) posOf(t lexer.Token) ast.Position {
 }
 
 // Parse parses a whole source file.
-func (p *Parser) Parse() (f *ast.File, err error) {
-	defer func() {
-		if r := recover(); r != nil {
-			if pe, ok := r.(parseError); ok {
-				err = fmt.Errorf("parser: %s", pe.msg)
-				return
-			}
-			panic(r)
-		}
-	}()
-	f = p.parseFile()
+func (p *Parser) Parse() (*ast.File, error) {
+	f := p.parseFile()
+	if p.err != nil {
+		return nil, fmt.Errorf("parser: %s", p.err)
+	}
 	return f, nil
 }
 
 func (p *Parser) parseFile() *ast.File {
+	if p.err != nil {
+		return nil
+	}
 	start := p.cur()
-	kw := p.expect("package")
-	_ = kw
+	p.expect("package")
 	name := p.cur()
 	if name.Type != lexer.IDENT {
 		p.fail("expected package name, got %s", name)
+		return nil
 	}
 	p.next()
 	p.semi()
@@ -117,17 +117,20 @@ func (p *Parser) parseFile() *ast.File {
 	for p.at("import") {
 		file.Imports = append(file.Imports, p.parseImport()...)
 	}
-	for !p.atType(lexer.EOF) {
+	for !p.atType(lexer.EOF) && p.err == nil {
 		file.Decls = append(file.Decls, p.parseDecl())
 	}
 	return file
 }
 
 func (p *Parser) parseImport() []*ast.ImportSpec {
+	if p.err != nil {
+		return nil
+	}
 	start := p.expect("import")
 	var specs []*ast.ImportSpec
 	if p.accept("(") {
-		for !p.at(")") && !p.atType(lexer.EOF) {
+		for !p.at(")") && !p.atType(lexer.EOF) && p.err == nil {
 			specs = append(specs, p.parseImportSpec(start))
 			p.semi()
 		}
@@ -140,18 +143,25 @@ func (p *Parser) parseImport() []*ast.ImportSpec {
 }
 
 func (p *Parser) parseImportSpec(start lexer.Token) *ast.ImportSpec {
+	if p.err != nil {
+		return nil
+	}
 	spec := &ast.ImportSpec{Position: p.posOf(start)}
 	if p.atType(lexer.IDENT) || p.at(".") {
 		spec.Name = p.next().Literal
 	}
 	if !p.atType(lexer.STRING) {
 		p.fail("expected import path, got %s", p.cur())
+		return spec
 	}
 	spec.Path = p.next().Literal
 	return spec
 }
 
 func (p *Parser) parseDecl() ast.Decl {
+	if p.err != nil {
+		return nil
+	}
 	start := p.cur()
 	switch {
 	case p.at("func"):
@@ -166,6 +176,9 @@ func (p *Parser) parseDecl() ast.Decl {
 }
 
 func (p *Parser) parseFuncDecl() *ast.FuncDecl {
+	if p.err != nil {
+		return nil
+	}
 	start := p.expect("func")
 	fn := &ast.FuncDecl{Position: p.posOf(start)}
 	// method receiver
@@ -175,6 +188,7 @@ func (p *Parser) parseFuncDecl() *ast.FuncDecl {
 	name := p.cur()
 	if name.Type != lexer.IDENT {
 		p.fail("expected function name, got %s", name)
+		return nil
 	}
 	p.next()
 	fn.Name = name.Literal
@@ -188,6 +202,9 @@ func (p *Parser) parseFuncDecl() *ast.FuncDecl {
 
 // parseFuncSignature parses `(params) results`.
 func (p *Parser) parseFuncSignature() *ast.FuncType {
+	if p.err != nil {
+		return nil
+	}
 	start := p.cur()
 	ft := &ast.FuncType{Position: p.posOf(start)}
 	ft.Params = p.parseFieldList().List
@@ -202,9 +219,12 @@ func (p *Parser) parseFuncSignature() *ast.FuncType {
 }
 
 func (p *Parser) parseGenDecl(start lexer.Token, tok string) *ast.GenDecl {
+	if p.err != nil {
+		return nil
+	}
 	gd := &ast.GenDecl{Position: p.posOf(start), Tok: tok}
 	if p.accept("(") {
-		for !p.at(")") && !p.atType(lexer.EOF) {
+		for !p.at(")") && !p.atType(lexer.EOF) && p.err == nil {
 			gd.Specs = append(gd.Specs, p.parseSpec(tok))
 			p.semi()
 		}
@@ -217,11 +237,15 @@ func (p *Parser) parseGenDecl(start lexer.Token, tok string) *ast.GenDecl {
 }
 
 func (p *Parser) parseSpec(tok string) ast.Spec {
+	if p.err != nil {
+		return nil
+	}
 	start := p.cur()
 	if tok == "type" {
 		name := p.cur()
 		if name.Type != lexer.IDENT {
 			p.fail("expected type name, got %s", name)
+			return nil
 		}
 		p.next()
 		spec := &ast.TypeSpec{Position: p.posOf(start), Name: name.Literal}
@@ -237,6 +261,7 @@ func (p *Parser) parseSpec(tok string) ast.Spec {
 		n := p.cur()
 		if n.Type != lexer.IDENT {
 			p.fail("expected identifier in %s declaration, got %s", tok, n)
+			return spec
 		}
 		p.next()
 		spec.Names = append(spec.Names, n.Literal)
@@ -264,10 +289,13 @@ type rawItem struct {
 
 // parseFieldList parses `( a, b int, c string )` or `( int, error )`.
 func (p *Parser) parseFieldList() *ast.FieldList {
+	if p.err != nil {
+		return nil
+	}
 	start := p.expect("(")
 	fl := &ast.FieldList{Position: p.posOf(start)}
 	var items []rawItem
-	for !p.at(")") && !p.atType(lexer.EOF) {
+	for !p.at(")") && !p.atType(lexer.EOF) && p.err == nil {
 		items = append(items, p.parseParamItem())
 		if !p.accept(",") {
 			break
@@ -279,6 +307,9 @@ func (p *Parser) parseFieldList() *ast.FieldList {
 }
 
 func (p *Parser) parseParamItem() rawItem {
+	if p.err != nil {
+		return rawItem{}
+	}
 	if p.at("...") {
 		start := p.next()
 		elem := p.parseType()
@@ -349,6 +380,9 @@ func (p *Parser) startsType() bool {
 // ------------------------------------------------------------------- types
 
 func (p *Parser) parseType() ast.Expr {
+	if p.err != nil {
+		return nil
+	}
 	t := p.cur()
 	switch {
 	case p.at("*"):
@@ -405,6 +439,7 @@ func (p *Parser) parseType() ast.Expr {
 			sel := p.cur()
 			if sel.Type != lexer.IDENT {
 				p.fail("expected identifier after '.', got %s", sel)
+				return nil
 			}
 			p.next()
 			return &ast.SelectorExpr{Position: p.posOf(t), X: &ast.Ident{Position: p.posOf(t), Name: t.Literal}, Sel: sel.Literal}
@@ -417,10 +452,13 @@ func (p *Parser) parseType() ast.Expr {
 }
 
 func (p *Parser) parseStructType() *ast.StructType {
+	if p.err != nil {
+		return nil
+	}
 	start := p.expect("struct")
 	st := &ast.StructType{Position: p.posOf(start)}
 	p.expect("{")
-	for !p.at("}") && !p.atType(lexer.EOF) {
+	for !p.at("}") && !p.atType(lexer.EOF) && p.err == nil {
 		var names []string
 		for p.atType(lexer.IDENT) {
 			names = append(names, p.next().Literal)
@@ -437,13 +475,17 @@ func (p *Parser) parseStructType() *ast.StructType {
 }
 
 func (p *Parser) parseInterfaceType() *ast.InterfaceType {
+	if p.err != nil {
+		return nil
+	}
 	start := p.expect("interface")
 	it := &ast.InterfaceType{Position: p.posOf(start)}
 	p.expect("{")
-	for !p.at("}") && !p.atType(lexer.EOF) {
+	for !p.at("}") && !p.atType(lexer.EOF) && p.err == nil {
 		name := p.cur()
 		if name.Type != lexer.IDENT {
 			p.fail("expected method name in interface, got %s", name)
+			return it
 		}
 		p.next()
 		ft := p.parseFuncSignature()
@@ -461,9 +503,12 @@ func (p *Parser) parseInterfaceType() *ast.InterfaceType {
 // ------------------------------------------------------------- statements
 
 func (p *Parser) parseBlock() *ast.BlockStmt {
+	if p.err != nil {
+		return nil
+	}
 	start := p.expect("{")
 	b := &ast.BlockStmt{Position: p.posOf(start)}
-	for !p.at("}") && !p.atType(lexer.EOF) {
+	for !p.at("}") && !p.atType(lexer.EOF) && p.err == nil {
 		b.List = append(b.List, p.parseStmt())
 		p.semi()
 	}
@@ -472,6 +517,9 @@ func (p *Parser) parseBlock() *ast.BlockStmt {
 }
 
 func (p *Parser) parseStmt() ast.Stmt {
+	if p.err != nil {
+		return nil
+	}
 	switch {
 	case p.at("var"), p.at("const"), p.at("type"):
 		start := p.cur()
@@ -518,8 +566,14 @@ func (p *Parser) parseStmt() ast.Stmt {
 }
 
 func (p *Parser) parseSimpleStmt() ast.Stmt {
+	if p.err != nil {
+		return nil
+	}
 	start := p.cur()
 	lhs := p.parseExprList()
+	if p.err != nil {
+		return nil
+	}
 	if t := p.cur(); t.Type == lexer.OP {
 		switch t.Literal {
 		case "=", ":=", "+=", "-=", "*=", "/=", "%=", "&=", "|=", "^=", "<<=", ">>=", "&^=":
@@ -537,11 +591,15 @@ func (p *Parser) parseSimpleStmt() ast.Stmt {
 	}
 	if len(lhs) != 1 {
 		p.fail("expected single expression in statement")
+		return nil
 	}
 	return &ast.ExprStmt{Position: p.posOf(start), X: lhs[0]}
 }
 
 func (p *Parser) parseIf() ast.Stmt {
+	if p.err != nil {
+		return nil
+	}
 	start := p.expect("if")
 	stmt := &ast.IfStmt{Position: p.posOf(start)}
 	p.inControlHeader = true
@@ -550,6 +608,10 @@ func (p *Parser) parseIf() ast.Stmt {
 		// no init
 	} else {
 		first = p.parseSimpleStmt()
+	}
+	if p.err != nil {
+		p.inControlHeader = false
+		return nil
 	}
 	if p.accept(";") {
 		stmt.Init = first
@@ -560,6 +622,8 @@ func (p *Parser) parseIf() ast.Stmt {
 			stmt.Cond = es.X
 		} else {
 			p.fail("expected condition in if statement")
+			p.inControlHeader = false
+			return nil
 		}
 	}
 	p.inControlHeader = false
@@ -576,6 +640,9 @@ func (p *Parser) parseIf() ast.Stmt {
 }
 
 func (p *Parser) parseFor() ast.Stmt {
+	if p.err != nil {
+		return nil
+	}
 	start := p.expect("for")
 	stmt := &ast.ForStmt{Position: p.posOf(start)}
 	if p.at("{") {
@@ -586,6 +653,10 @@ func (p *Parser) parseFor() ast.Stmt {
 	if p.rangeAhead() {
 		r := &ast.RangeStmt{Position: p.posOf(start)}
 		lhs := p.parseExprList()
+		if p.err != nil {
+			p.inControlHeader = false
+			return nil
+		}
 		if len(lhs) == 1 {
 			r.Key = lhs[0]
 		} else {
@@ -602,6 +673,10 @@ func (p *Parser) parseFor() ast.Stmt {
 	// three-clause (or bare condition)
 	if !p.at(";") {
 		first := p.parseSimpleStmt()
+		if p.err != nil {
+			p.inControlHeader = false
+			return nil
+		}
 		if p.at("{") {
 			// `for cond {` — first is the condition
 			if es, ok := first.(*ast.ExprStmt); ok {
@@ -655,12 +730,19 @@ func (p *Parser) rangeAhead() bool {
 }
 
 func (p *Parser) parseSwitch() ast.Stmt {
+	if p.err != nil {
+		return nil
+	}
 	start := p.expect("switch")
 	p.inControlHeader = true
 	var initStmt, tagStmt ast.Stmt
 	var tag ast.Expr
 	if !p.at("{") {
 		first := p.parseSimpleStmt()
+		if p.err != nil {
+			p.inControlHeader = false
+			return nil
+		}
 		if p.accept(";") {
 			initStmt = first
 			if !p.at("{") {
@@ -693,9 +775,12 @@ func (p *Parser) parseSwitch() ast.Stmt {
 }
 
 func (p *Parser) parseCaseClauses() []*ast.CaseClause {
+	if p.err != nil {
+		return nil
+	}
 	p.expect("{")
 	var clauses []*ast.CaseClause
-	for !p.at("}") && !p.atType(lexer.EOF) {
+	for !p.at("}") && !p.atType(lexer.EOF) && p.err == nil {
 		start := p.cur()
 		c := &ast.CaseClause{Position: p.posOf(start)}
 		if p.accept("case") {
@@ -704,9 +789,10 @@ func (p *Parser) parseCaseClauses() []*ast.CaseClause {
 			// no list
 		} else {
 			p.fail("expected case or default, got %s", p.cur())
+			return clauses
 		}
 		p.expect(":")
-		for !p.at("case") && !p.at("default") && !p.at("}") && !p.atType(lexer.EOF) {
+		for !p.at("case") && !p.at("default") && !p.at("}") && !p.atType(lexer.EOF) && p.err == nil {
 			c.Body = append(c.Body, p.parseStmt())
 			p.semi()
 		}
@@ -717,10 +803,13 @@ func (p *Parser) parseCaseClauses() []*ast.CaseClause {
 }
 
 func (p *Parser) parseSelect() ast.Stmt {
+	if p.err != nil {
+		return nil
+	}
 	start := p.expect("select")
 	sl := &ast.SelectStmt{Position: p.posOf(start)}
 	p.expect("{")
-	for !p.at("}") && !p.atType(lexer.EOF) {
+	for !p.at("}") && !p.atType(lexer.EOF) && p.err == nil {
 		c := &ast.CommClause{Position: p.posOf(p.cur())}
 		if p.accept("case") {
 			c.Comm = p.parseSimpleStmt()
@@ -728,9 +817,10 @@ func (p *Parser) parseSelect() ast.Stmt {
 			// no comm
 		} else {
 			p.fail("expected case or default in select, got %s", p.cur())
+			return sl
 		}
 		p.expect(":")
-		for !p.at("case") && !p.at("default") && !p.at("}") && !p.atType(lexer.EOF) {
+		for !p.at("case") && !p.at("default") && !p.at("}") && !p.atType(lexer.EOF) && p.err == nil {
 			c.Body = append(c.Body, p.parseStmt())
 			p.semi()
 		}
@@ -743,9 +833,15 @@ func (p *Parser) parseSelect() ast.Stmt {
 // ---------------------------------------------------------- expressions
 
 func (p *Parser) parseExprList() []ast.Expr {
+	if p.err != nil {
+		return nil
+	}
 	var list []ast.Expr
 	list = append(list, p.parseExpr())
 	for p.accept(",") {
+		if p.err != nil {
+			return list
+		}
 		list = append(list, p.parseExpr())
 	}
 	return list
@@ -764,8 +860,14 @@ func (p *Parser) parseExpr() ast.Expr {
 }
 
 func (p *Parser) parseBinaryExpr(minPrec int) ast.Expr {
+	if p.err != nil {
+		return nil
+	}
 	left := p.parseUnary()
 	for {
+		if p.err != nil {
+			return left
+		}
 		t := p.cur()
 		if t.Type != lexer.OP {
 			break
@@ -782,6 +884,9 @@ func (p *Parser) parseBinaryExpr(minPrec int) ast.Expr {
 }
 
 func (p *Parser) parseUnary() ast.Expr {
+	if p.err != nil {
+		return nil
+	}
 	t := p.cur()
 	if t.Type == lexer.OP {
 		switch t.Literal {
@@ -794,8 +899,14 @@ func (p *Parser) parseUnary() ast.Expr {
 }
 
 func (p *Parser) parsePrimary() ast.Expr {
+	if p.err != nil {
+		return nil
+	}
 	x := p.parseOperand()
 	for {
+		if p.err != nil {
+			return x
+		}
 		switch {
 		case p.at("."):
 			p.next()
@@ -815,6 +926,7 @@ func (p *Parser) parsePrimary() ast.Expr {
 			sel := p.cur()
 			if sel.Type != lexer.IDENT {
 				p.fail("expected selector, got %s", sel)
+				return x
 			}
 			p.next()
 			x = &ast.SelectorExpr{Position: x.Pos(), X: x, Sel: sel.Literal}
@@ -868,6 +980,9 @@ func (p *Parser) isCompositeLitType(x ast.Expr) bool {
 }
 
 func (p *Parser) parseOperand() ast.Expr {
+	if p.err != nil {
+		return nil
+	}
 	t := p.cur()
 	switch {
 	case t.Type == lexer.INT, t.Type == lexer.FLOAT, t.Type == lexer.IMAG, t.Type == lexer.STRING, t.Type == lexer.CHAR:
@@ -901,14 +1016,20 @@ func (p *Parser) parseOperand() ast.Expr {
 }
 
 func (p *Parser) parseCompositeLit(typ ast.Expr) ast.Expr {
+	if p.err != nil {
+		return nil
+	}
 	start := p.expect("{")
 	lit := &ast.CompositeLit{Position: p.posOf(start), Type: typ}
-	for !p.at("}") && !p.atType(lexer.EOF) {
+	for !p.at("}") && !p.atType(lexer.EOF) && p.err == nil {
 		var elt ast.Expr
 		if p.at("{") {
 			elt = p.parseCompositeLit(nil)
 		} else {
 			first := p.parseExpr()
+			if p.err != nil {
+				return lit
+			}
 			if p.accept(":") {
 				var v ast.Expr
 				if p.at("{") {
