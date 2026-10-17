@@ -85,6 +85,32 @@ func loadProgram(entry string) ([]*codegen.Package, error) {
 	visited := map[string]bool{}
 	var pkgs []*codegen.Package
 
+	// parseDir parses every non-test file in a directory as one package.
+	parseDir := func(dir string) (string, []ast.Decl, []string, error) {
+		files, err := filepath.Glob(filepath.Join(dir, "*.go"))
+		if err != nil {
+			return "", nil, nil, err
+		}
+		var decls []ast.Decl
+		var imports []string
+		pkgName := ""
+		for _, f := range files {
+			if strings.HasSuffix(f, "_test.go") {
+				continue
+			}
+			name, d, im, err := parseFile(f)
+			if err != nil {
+				return "", nil, nil, err
+			}
+			if pkgName == "" {
+				pkgName = name
+			}
+			decls = append(decls, d...)
+			imports = append(imports, im...)
+		}
+		return pkgName, decls, imports, nil
+	}
+
 	var load func(dir string) error
 	load = func(dir string) error {
 		abs, err := filepath.Abs(dir)
@@ -95,38 +121,13 @@ func loadProgram(entry string) ([]*codegen.Package, error) {
 			return nil
 		}
 		visited[abs] = true
-
-		files, err := filepath.Glob(filepath.Join(dir, "*.go"))
+		pkgName, decls, imports, err := parseDir(dir)
 		if err != nil {
 			return err
-		}
-		var decls []ast.Decl
-		var imports []string
-		pkgName := ""
-		for _, f := range files {
-			if strings.HasSuffix(f, "_test.go") {
-				continue
-			}
-			src, err := os.ReadFile(f)
-			if err != nil {
-				return err
-			}
-			file, err := parseSource(string(src))
-			if err != nil {
-				return fmt.Errorf("%s: %w", f, err)
-			}
-			if pkgName == "" {
-				pkgName = file.Package
-			}
-			decls = append(decls, file.Decls...)
-			for _, imp := range file.Imports {
-				imports = append(imports, strings.Trim(imp.Path, "\""))
-			}
 		}
 		if pkgName == "" {
 			return nil // directory without Go files
 		}
-
 		for _, imp := range imports {
 			if d, ok := localDir(root, modPath, imp); ok {
 				if err := load(d); err != nil {
@@ -138,10 +139,47 @@ func loadProgram(entry string) ([]*codegen.Package, error) {
 		return nil
 	}
 
-	if err := load(filepath.Dir(entry)); err != nil {
+	// A file argument compiles just that file (like `go run file.go`); a
+	// directory argument compiles the whole package.
+	if info, err := os.Stat(entry); err == nil && !info.IsDir() {
+		abs, _ := filepath.Abs(filepath.Dir(entry))
+		visited[abs] = true
+		pkgName, decls, imports, err := parseFile(entry)
+		if err != nil {
+			return nil, err
+		}
+		for _, imp := range imports {
+			if d, ok := localDir(root, modPath, imp); ok {
+				if err := load(d); err != nil {
+					return nil, err
+				}
+			}
+		}
+		pkgs = append(pkgs, &codegen.Package{Name: pkgName, Decls: decls})
+		return pkgs, nil
+	}
+
+	if err := load(entry); err != nil {
 		return nil, err
 	}
 	return pkgs, nil
+}
+
+// parseFile parses one Go file into its package name, declarations and imports.
+func parseFile(path string) (string, []ast.Decl, []string, error) {
+	src, err := os.ReadFile(path)
+	if err != nil {
+		return "", nil, nil, err
+	}
+	file, err := parseSource(string(src))
+	if err != nil {
+		return "", nil, nil, fmt.Errorf("%s: %w", path, err)
+	}
+	var imports []string
+	for _, imp := range file.Imports {
+		imports = append(imports, strings.Trim(imp.Path, "\""))
+	}
+	return file.Package, file.Decls, imports, nil
 }
 
 // parseSource lexes and parses one Go source string.
