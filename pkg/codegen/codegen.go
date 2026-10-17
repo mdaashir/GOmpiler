@@ -37,8 +37,11 @@ type Generator struct {
 	structFields map[string][]string
 	aliases      map[string]ast.Expr
 	types        map[string]ast.Expr
-	methods      map[string]methodInfo
+	methods      map[string][]*ast.FuncDecl
+	embedOf      map[string][]string
 	ptrVars      map[string]bool
+	recvName     string
+	recvPtr      bool
 
 	needContains   bool
 	needHasPrefix  bool
@@ -64,12 +67,6 @@ type Generator struct {
 	err        error
 }
 
-// methodInfo describes a method declared with a receiver.
-type methodInfo struct {
-	recvType string // bare type name, e.g. "Counter"
-	ptr      bool   // pointer receiver
-}
-
 // Generate compiles a parsed file to C++ source text.
 func Generate(f *ast.File) (string, error) {
 	g := &Generator{
@@ -77,7 +74,8 @@ func Generate(f *ast.File) (string, error) {
 		structFields: map[string][]string{},
 		aliases:      map[string]ast.Expr{},
 		types:        map[string]ast.Expr{},
-		methods:      map[string]methodInfo{},
+		methods:      map[string][]*ast.FuncDecl{},
+		embedOf:      map[string][]string{},
 		ptrVars:      map[string]bool{},
 	}
 	g.collectTypes(f)
@@ -99,9 +97,8 @@ func (g *Generator) fail(format string, args ...interface{}) {
 func (g *Generator) collectTypes(f *ast.File) {
 	for _, d := range f.Decls {
 		if fd, ok := d.(*ast.FuncDecl); ok && fd.Recv != nil && len(fd.Recv.List) > 0 {
-			rf := fd.Recv.List[0]
-			name, ptr := baseTypeName(rf.Type)
-			g.methods[fd.Name] = methodInfo{recvType: name, ptr: ptr}
+			name, _ := baseTypeName(fd.Recv.List[0].Type)
+			g.methods[name] = append(g.methods[name], fd)
 			continue
 		}
 		gd, ok := d.(*ast.GenDecl)
@@ -114,6 +111,12 @@ func (g *Generator) collectTypes(f *ast.File) {
 				g.structNames[ts.Name] = true
 				var fields []string
 				for _, fld := range st.Fields {
+					if len(fld.Names) == 0 {
+						// embedded field: member named after its base type
+						base, _ := baseTypeName(fld.Type)
+						g.embedOf[ts.Name] = append(g.embedOf[ts.Name], base)
+						continue
+					}
 					fields = append(fields, fld.Names...)
 				}
 				g.structFields[ts.Name] = fields
@@ -262,9 +265,9 @@ func (g *Generator) emitDecls(decls []ast.Decl) {
 			g.emitGenDecl(gd, true)
 		}
 	}
-	// 2. Forward declarations for functions and methods.
+	// 2. Forward declarations for free functions.
 	for _, d := range decls {
-		if fd, ok := d.(*ast.FuncDecl); ok && !(fd.Recv == nil && fd.Name == "main") {
+		if fd, ok := d.(*ast.FuncDecl); ok && fd.Recv == nil && fd.Name != "main" {
 			g.emitFuncProto(fd)
 		}
 	}
@@ -356,6 +359,9 @@ func (g *Generator) emitParams(fields []*ast.Field) string {
 func (g *Generator) emitDecl(d ast.Decl) {
 	switch t := d.(type) {
 	case *ast.FuncDecl:
+		if t.Recv != nil {
+			return // emitted as a class member
+		}
 		g.emitFunc(t)
 	case *ast.GenDecl:
 		g.emitGenDecl(t, true)
@@ -369,22 +375,62 @@ func (g *Generator) emitFunc(fd *ast.FuncDecl) {
 	g.writeln("{")
 	g.indent++
 	g.curResults = fd.Type.Results
-	if fd.Recv != nil && len(fd.Recv.List) > 0 {
-		rf := fd.Recv.List[0]
-		_, ptr := baseTypeName(rf.Type)
-		if len(rf.Names) > 0 {
-			g.ptrVars[rf.Names[0]] = ptr
-		}
-	}
-	if fd.Recv == nil && fd.Name == "main" {
+	savedRecv, savedPtr := g.recvName, g.recvPtr
+	g.recvName, g.recvPtr = "", false
+	if fd.Name == "main" {
 		g.emitStmts(fd.Body.List)
 		g.writeln("return 0;")
 	} else {
 		g.emitStmts(fd.Body.List)
 	}
+	g.recvName, g.recvPtr = savedRecv, savedPtr
 	g.indent--
 	g.writeln("}")
 	g.writeln("")
+}
+
+// methodSignature is funcSignature without the receiver parameter.
+func (g *Generator) methodSignature(fd *ast.FuncDecl) string {
+	params := g.emitParams(fd.Type.Params)
+	ret := g.resultType(fd.Type.Results)
+	return fmt.Sprintf("auto %s(%s) -> %s", fd.Name, params, ret)
+}
+
+// emitMethod emits a method as a member function of its receiver type. Inside
+// the body the Go receiver name maps to `this` / `(*this)`.
+func (g *Generator) emitMethod(fd *ast.FuncDecl) {
+	g.writeln("%s", g.methodSignature(fd))
+	g.writeln("{")
+	g.indent++
+	g.curResults = fd.Type.Results
+	rf := fd.Recv.List[0]
+	_, ptr := baseTypeName(rf.Type)
+	savedRecv, savedPtr := g.recvName, g.recvPtr
+	g.recvPtr = ptr
+	g.recvName = ""
+	if len(rf.Names) > 0 {
+		g.recvName = rf.Names[0]
+	}
+	g.emitStmts(fd.Body.List)
+	g.recvName, g.recvPtr = savedRecv, savedPtr
+	g.indent--
+	g.writeln("}")
+}
+
+// emitPromoted forwards a method of an embedded type.
+func (g *Generator) emitPromoted(fd *ast.FuncDecl, base string) {
+	params := g.emitParams(fd.Type.Params)
+	ret := g.resultType(fd.Type.Results)
+	var names []string
+	for _, fld := range fd.Type.Params {
+		names = append(names, fld.Names...)
+	}
+	g.writeln("auto %s(%s) -> %s", fd.Name, params, ret)
+	g.writeln("{")
+	g.indent++
+	g.writeln("return %s.%s(%s);", base, fd.Name, strings.Join(names, ", "))
+	g.indent--
+	g.writeln("}")
 }
 
 func (g *Generator) emitGenDecl(gd *ast.GenDecl, topLevel bool) {
@@ -411,12 +457,27 @@ func (g *Generator) emitTypeSpec(ts *ast.TypeSpec) {
 		g.writeln("class %s { public:", ts.Name)
 		g.indent++
 		for _, fld := range st.Fields {
+			if len(fld.Names) == 0 {
+				// embedded field: an object member named after its type
+				base, _ := baseTypeName(fld.Type)
+				g.writeln("%s %s;", base, base)
+				continue
+			}
 			typ := g.cppType(fld.Type)
 			for _, n := range fld.Names {
 				g.writeln("%s %s;", typ, n)
 			}
 		}
 		g.emitStrMethod(ts.Name)
+		for _, fd := range g.methods[ts.Name] {
+			g.emitMethod(fd)
+		}
+		// promote methods of embedded types
+		for _, base := range g.embedOf[ts.Name] {
+			for _, fd := range g.methods[base] {
+				g.emitPromoted(fd, base)
+			}
+		}
 		g.indent--
 		g.writeln("};")
 		g.writeln("")
@@ -823,6 +884,21 @@ func isStringLit(e ast.Expr) bool {
 	return ok && bl.Kind == "STRING"
 }
 
+// selBase renders the base of a selector and the member-access operator,
+// mapping a method receiver name to `this` / `(*this)`.
+func (g *Generator) selBase(id *ast.Ident) (string, string) {
+	if g.recvName != "" && id.Name == g.recvName {
+		if g.recvPtr {
+			return "this", "->"
+		}
+		return "(*this)", "."
+	}
+	if g.ptrVars[id.Name] {
+		return id.Name, "->"
+	}
+	return id.Name, "."
+}
+
 // isPointerExpr reports whether an expression produces a pointer (`&T{...}` or
 // `new(T)`).
 func isPointerExpr(e ast.Expr) bool {
@@ -1115,6 +1191,12 @@ func (g *Generator) deferBody(call ast.Expr) string {
 func (g *Generator) emitExpr(e ast.Expr) string {
 	switch t := e.(type) {
 	case *ast.Ident:
+		if g.recvName != "" && t.Name == g.recvName {
+			if g.recvPtr {
+				return "this"
+			}
+			return "(*this)"
+		}
 		return t.Name
 	case *ast.BasicLit:
 		return g.emitLit(t)
@@ -1143,8 +1225,9 @@ func (g *Generator) emitExpr(e ast.Expr) string {
 	case *ast.StarExpr:
 		return "(*" + g.emitExpr(t.X) + ")"
 	case *ast.SelectorExpr:
-		if id, ok := t.X.(*ast.Ident); ok && g.ptrVars[id.Name] {
-			return id.Name + "->" + t.Sel
+		if id, ok := t.X.(*ast.Ident); ok {
+			base, sep := g.selBase(id)
+			return base + sep + t.Sel
 		}
 		return g.emitExpr(t.X) + "." + t.Sel
 	case *ast.IndexExpr:
@@ -1245,30 +1328,13 @@ func (g *Generator) emitCall(c *ast.CallExpr) string {
 			}
 		}
 	}
-	// method calls: x.M(...) where M has a receiver declared in this file.
+	// selector calls: methods and function values
 	if sel, ok := c.Fun.(*ast.SelectorExpr); ok {
-		if mi, ok := g.methods[sel.Sel]; ok {
-			arg := g.emitExpr(sel.X)
-			if id, ok := sel.X.(*ast.Ident); ok {
-				isPtr := g.ptrVars[id.Name]
-				if mi.ptr && !isPtr {
-					arg = "&" + id.Name
-				} else if !mi.ptr && isPtr {
-					arg = "(*" + id.Name + ")"
-				}
-			} else if mi.ptr {
-				arg = "&(" + arg + ")"
-			}
-			parts := []string{arg}
-			for _, a := range c.Args {
-				parts = append(parts, g.emitExpr(a))
-			}
-			return fmt.Sprintf("%s_%s(%s)", mi.recvType, sel.Sel, strings.Join(parts, ", "))
+		if id, ok := sel.X.(*ast.Ident); ok {
+			base, sep := g.selBase(id)
+			return base + sep + sel.Sel + "(" + g.emitArgs(c.Args) + ")"
 		}
-	}
-	// function value call
-	if sel, ok := c.Fun.(*ast.SelectorExpr); ok {
-		return fmt.Sprintf("%s.%s(%s)", g.emitExpr(sel.X), sel.Sel, g.emitArgs(c.Args))
+		return g.emitExpr(sel.X) + "." + sel.Sel + "(" + g.emitArgs(c.Args) + ")"
 	}
 	return fmt.Sprintf("%s(%s)", g.emitExpr(c.Fun), g.emitArgs(c.Args))
 }

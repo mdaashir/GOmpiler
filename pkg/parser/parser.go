@@ -289,11 +289,12 @@ type rawItem struct {
 
 // parseFieldList parses `( a, b int, c string )` or `( int, error )`.
 func (p *Parser) parseFieldList() *ast.FieldList {
-	if p.err != nil {
-		return nil
-	}
-	start := p.expect("(")
+	start := p.cur()
 	fl := &ast.FieldList{Position: p.posOf(start)}
+	if p.err != nil {
+		return fl
+	}
+	p.expect("(")
 	var items []rawItem
 	for !p.at(")") && !p.atType(lexer.EOF) && p.err == nil {
 		items = append(items, p.parseParamItem())
@@ -459,6 +460,20 @@ func (p *Parser) parseStructType() *ast.StructType {
 	st := &ast.StructType{Position: p.posOf(start)}
 	p.expect("{")
 	for !p.at("}") && !p.atType(lexer.EOF) && p.err == nil {
+		if p.at("*") {
+			typ := p.parseType()
+			st.Fields = append(st.Fields, &ast.Field{Type: typ})
+			p.semi()
+			continue
+		}
+		// embedded field: a single bare type name with no following type
+		if p.atType(lexer.IDENT) && p.peek().Type == lexer.OP &&
+			(p.peek().Literal == ";" || p.peek().Literal == "}") {
+			name := p.next()
+			st.Fields = append(st.Fields, &ast.Field{Type: &ast.Ident{Position: p.posOf(name), Name: name.Literal}})
+			p.semi()
+			continue
+		}
 		var names []string
 		for p.atType(lexer.IDENT) {
 			names = append(names, p.next().Literal)
@@ -488,6 +503,15 @@ func (p *Parser) parseInterfaceType() *ast.InterfaceType {
 			return it
 		}
 		p.next()
+		if !p.at("(") {
+			// embedded interface (e.g. `Node`)
+			it.Methods = append(it.Methods, &ast.Field{
+				Position: p.posOf(name),
+				Names:    []string{name.Literal},
+			})
+			p.semi()
+			continue
+		}
 		ft := p.parseFuncSignature()
 		it.Methods = append(it.Methods, &ast.Field{
 			Position: p.posOf(name),
