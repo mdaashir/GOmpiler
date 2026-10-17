@@ -100,6 +100,35 @@ func main() { _ = strings.Contains("a", "b") }
 	}
 }
 
+func TestInterfaceAny(t *testing.T) {
+	out := generate(t, `package main
+func id(x interface{}) interface{} { return x }
+func main() { _ = id(3) }
+`)
+	if !strings.Contains(out, "go2cpp::any") {
+		t.Errorf("expected go2cpp::any, got:\n%s", out)
+	}
+	if !strings.Contains(out, "class any") {
+		t.Errorf("expected the any helper definition, got:\n%s", out)
+	}
+}
+
+func TestConcurrencyRuntime(t *testing.T) {
+	out := generate(t, `package main
+func main() {
+	ch := make(chan int, 1)
+	ch <- 1
+	_ = <-ch
+}
+`)
+	if !strings.Contains(out, "go2cpp::channel<int>") {
+		t.Errorf("expected channel<int>, got:\n%s", out)
+	}
+	if !strings.Contains(out, "class channel") {
+		t.Errorf("expected the channel helper definition, got:\n%s", out)
+	}
+}
+
 // TestGenerateAllTestcases ensures every existing testcase lowers without error.
 func TestGenerateAllTestcases(t *testing.T) {
 	files, err := filepath.Glob(filepath.Join("..", "..", "testcases", "*.go"))

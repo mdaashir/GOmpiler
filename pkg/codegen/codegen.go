@@ -38,6 +38,7 @@ type Generator struct {
 	usesPrint      bool
 	usesBuiltinOut bool
 	needRuntime    bool
+	needAny        bool
 
 	switchCounter int
 	selectCounter int
@@ -194,6 +195,9 @@ func (g *Generator) cppType(e ast.Expr) string {
 	case *ast.ChanType:
 		g.needRuntime = true
 		return "go2cpp::channel<" + g.cppType(t.Value) + ">"
+	case *ast.InterfaceType:
+		g.needAny = true
+		return "go2cpp::any"
 	case *ast.SelectorExpr:
 		return t.Sel
 	case *ast.Ellipsis:
@@ -228,6 +232,8 @@ func (g *Generator) zeroValue(e ast.Expr) string {
 		return "{}"
 	case *ast.PtrType, *ast.StarExpr:
 		return "nullptr"
+	case *ast.InterfaceType:
+		return "{}"
 	}
 	return "{}"
 }
@@ -525,6 +531,8 @@ func (g *Generator) emitStmt(s ast.Stmt) {
 		g.emitSwitch(t)
 	case *ast.SelectStmt:
 		g.emitSelect(t)
+	case *ast.TypeSwitchStmt:
+		g.emitTypeSwitch(t)
 	case *ast.BranchStmt:
 		g.emitBranch(t)
 	case *ast.DeferStmt:
@@ -561,6 +569,10 @@ func (g *Generator) emitAssign(a *ast.AssignStmt) {
 		}
 		for _, e := range a.Rhs {
 			rhs = append(rhs, g.emitExpr(e))
+		}
+		if len(a.Lhs) == 1 && isBlank(a.Lhs[0]) {
+			g.writeln("(void)(%s);", rhs[0])
+			return
 		}
 		g.writeln("%s = %s;", strings.Join(lhs, ", "), strings.Join(rhs, ", "))
 		return
@@ -992,6 +1004,74 @@ func (g *Generator) emitCommClause(c *ast.CommClause, n, i int) {
 	}
 }
 
+// emitTypeSwitch lowers `switch v := x.(type)` to an is<T>()/as<T>() if-chain.
+func (g *Generator) emitTypeSwitch(st *ast.TypeSwitchStmt) {
+	g.needAny = true
+	varName := ""
+	var X ast.Expr
+	if as, ok := st.Assign.(*ast.AssignStmt); ok && len(as.Rhs) == 1 {
+		if ta, ok := as.Rhs[0].(*ast.TypeAssertExpr); ok {
+			X = ta.X
+		}
+		if len(as.Lhs) == 1 {
+			if id, ok := as.Lhs[0].(*ast.Ident); ok {
+				varName = id.Name
+			}
+		}
+	}
+	if X == nil {
+		g.fail("unsupported type switch")
+		return
+	}
+	g.writeln("{")
+	g.indent++
+	g.writeln("auto _tsw = %s;", g.emitExpr(X))
+	for i, c := range st.Body {
+		cond := ""
+		if len(c.List) > 0 {
+			var conds []string
+			for _, te := range c.List {
+				if id, ok := te.(*ast.Ident); ok && id.Name == "nil" {
+					conds = append(conds, "!_tsw.has_value()")
+					continue
+				}
+				conds = append(conds, fmt.Sprintf("_tsw.is<%s>()", g.cppType(te)))
+			}
+			cond = strings.Join(conds, " || ")
+		}
+		switch {
+		case i == 0 && cond == "":
+			g.writeln("{")
+		case i == 0:
+			g.writeln("if (%s)", cond)
+			g.writeln("{")
+		case cond == "":
+			g.writeln("else")
+			g.writeln("{")
+		default:
+			g.writeln("else if (%s)", cond)
+			g.writeln("{")
+		}
+		g.indent++
+		if varName != "" && varName != "_" {
+			if len(c.List) == 1 {
+				if id, ok := c.List[0].(*ast.Ident); !ok || id.Name != "nil" {
+					g.writeln("auto %s = _tsw.as<%s>();", varName, g.cppType(c.List[0]))
+				} else {
+					g.writeln("auto %s = _tsw;", varName)
+				}
+			} else {
+				g.writeln("auto %s = _tsw;", varName)
+			}
+		}
+		g.emitStmts(c.Body)
+		g.indent--
+		g.writeln("}")
+	}
+	g.indent--
+	g.writeln("}")
+}
+
 func (g *Generator) emitDefer(d *ast.DeferStmt) {
 	g.deferCounter++
 	body := g.deferBody(d.Call)
@@ -1065,7 +1145,11 @@ func (g *Generator) emitExpr(e ast.Expr) string {
 	case *ast.FuncLit:
 		return g.emitFuncLit(t)
 	case *ast.TypeAssertExpr:
-		return g.emitExpr(t.X)
+		if t.Type == nil {
+			return g.emitExpr(t.X)
+		}
+		g.needAny = true
+		return fmt.Sprintf("(%s).as<%s>()", g.emitExpr(t.X), g.cppType(t.Type))
 	}
 	g.fail("unsupported expression %T", e)
 	return "/*?*/"
@@ -1450,6 +1534,10 @@ func (g *Generator) preamble() string {
 	}
 	b.WriteString("#include <functional>\n")
 	b.WriteString("#include <algorithm>\n")
+	if g.needAny {
+		b.WriteString("#include <typeindex>\n")
+		b.WriteString("#include <typeinfo>\n")
+	}
 	if g.needRuntime {
 		b.WriteString("#include <thread>\n")
 		b.WriteString("#include <mutex>\n")
@@ -1459,11 +1547,17 @@ func (g *Generator) preamble() string {
 	}
 	b.WriteString("\n")
 
+	if g.needAny {
+		b.WriteString("#include <memory>\n")
+	}
+	if g.usesPrint || g.needAny {
+		b.WriteString(strconvHelperFormatOutput)
+	}
+	if g.needAny {
+		b.WriteString(helperAny)
+	}
 	if g.needRuntime {
 		b.WriteString(helperConcurrency)
-	}
-	if g.usesPrint {
-		b.WriteString(strconvHelperFormatOutput)
 	}
 	if g.needContains {
 		b.WriteString(helperContains)
@@ -1625,6 +1719,48 @@ inline std::tuple<double, bool> strconvParseFloat(const std::string& s, int) {
 inline std::tuple<long, bool> strconvParseInt(const std::string& s, int, int) {
     try { return { std::stol(s, nullptr, 0), true }; } catch (...) { return { 0, false }; }
 }
+`
+
+const helperAny = `
+namespace go2cpp {
+
+// any is the runtime representation of interface{}: a type-erased, printable
+// box with dynamic type identity, backing type assertions and type switches.
+class any {
+    struct base {
+        virtual ~base() {}
+        virtual void print(std::ostream&) const = 0;
+        virtual std::type_index type() const = 0;
+    };
+    template <typename T> struct holder : base {
+        T v;
+        holder(T x) : v(std::move(x)) {}
+        void print(std::ostream& o) const override { _format_output(o, v); }
+        std::type_index type() const override { return std::type_index(typeid(T)); }
+    };
+    std::shared_ptr<base> p_;
+public:
+    any() {}
+    template <typename T>
+    using stored_t = std::conditional_t<
+        std::is_same<std::decay_t<T>, const char*>::value || std::is_same<std::decay_t<T>, char*>::value,
+        std::string, std::decay_t<T>>;
+    template <typename T, typename = std::enable_if_t<!std::is_same<std::decay_t<T>, any>::value>>
+    any(T x) : p_(std::make_shared<holder<stored_t<T>>>(stored_t<T>(std::move(x)))) {}
+    template <typename T, typename = std::enable_if_t<!std::is_same<std::decay_t<T>, any>::value>>
+    any& operator=(T x) { p_ = std::make_shared<holder<stored_t<T>>>(stored_t<T>(std::move(x))); return *this; }
+    bool has_value() const { return static_cast<bool>(p_); }
+    template <typename T> bool is() const { return std::dynamic_pointer_cast<holder<T>>(p_) != nullptr; }
+    template <typename T> T as() const {
+        auto h = std::dynamic_pointer_cast<holder<T>>(p_);
+        if (!h) throw std::runtime_error("interface conversion: bad type assertion");
+        return h->v;
+    }
+    std::type_index type() const { return p_ ? p_->type() : std::type_index(typeid(void)); }
+    friend std::ostream& operator<<(std::ostream& o, const any& a) { if (a.p_) a.p_->print(o); return o; }
+};
+
+} // namespace go2cpp
 `
 
 const helperConcurrency = `

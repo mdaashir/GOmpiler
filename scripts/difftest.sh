@@ -22,6 +22,7 @@ tests=(
   output_char const continue types if_minus_one goto switch hello sprintf
   strings_index strings_replace strings_suffix strings_split methods
   chan_unbuffered chan_buffered goroutine select_chan select_default
+  interface_any interface_assert interface_typeswitch
 )
 
 # Programs whose output word order is unspecified (map iteration order).
