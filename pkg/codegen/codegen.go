@@ -33,15 +33,21 @@ type Generator struct {
 	sb     strBuilder
 	indent int
 
-	structNames  map[string]bool
-	structFields map[string][]string
-	aliases      map[string]ast.Expr
-	types        map[string]ast.Expr
-	methods      map[string][]*ast.FuncDecl
-	embedOf      map[string][]string
-	ptrVars      map[string]bool
-	recvName     string
-	recvPtr      bool
+	structNames      map[string]bool
+	structFields     map[string][]string
+	structFieldTypes map[string][]ast.Expr
+	aliases          map[string]ast.Expr
+	types            map[string]ast.Expr
+	methods          map[string][]*ast.FuncDecl
+	embedOf          map[string][]string
+	ptrVars          map[string]bool
+	recvName         string
+	recvPtr          bool
+
+	ifaces      map[string]*ast.InterfaceType
+	ifaceOrder  []string
+	ifaceOwn    map[string][]ifaceMeth
+	ifaceEmbeds map[string][]string
 
 	needContains   bool
 	needHasPrefix  bool
@@ -67,18 +73,29 @@ type Generator struct {
 	err        error
 }
 
+// ifaceMeth is one method in an interface's method set.
+type ifaceMeth struct {
+	name string
+	ft   *ast.FuncType
+}
+
 // Generate compiles a parsed file to C++ source text.
 func Generate(f *ast.File) (string, error) {
 	g := &Generator{
-		structNames:  map[string]bool{},
-		structFields: map[string][]string{},
-		aliases:      map[string]ast.Expr{},
-		types:        map[string]ast.Expr{},
-		methods:      map[string][]*ast.FuncDecl{},
-		embedOf:      map[string][]string{},
-		ptrVars:      map[string]bool{},
+		structNames:      map[string]bool{},
+		structFields:     map[string][]string{},
+		structFieldTypes: map[string][]ast.Expr{},
+		aliases:          map[string]ast.Expr{},
+		types:            map[string]ast.Expr{},
+		methods:          map[string][]*ast.FuncDecl{},
+		embedOf:          map[string][]string{},
+		ptrVars:          map[string]bool{},
+		ifaces:           map[string]*ast.InterfaceType{},
+		ifaceOwn:         map[string][]ifaceMeth{},
+		ifaceEmbeds:      map[string][]string{},
 	}
 	g.collectTypes(f)
+	g.buildInterfaces()
 	g.emitDecls(f.Decls)
 	if g.err != nil {
 		return "", g.err
@@ -110,6 +127,7 @@ func (g *Generator) collectTypes(f *ast.File) {
 			if st, ok := ts.Type.(*ast.StructType); ok {
 				g.structNames[ts.Name] = true
 				var fields []string
+				var ftypes []ast.Expr
 				for _, fld := range st.Fields {
 					if len(fld.Names) == 0 {
 						// embedded field: member named after its base type
@@ -117,14 +135,158 @@ func (g *Generator) collectTypes(f *ast.File) {
 						g.embedOf[ts.Name] = append(g.embedOf[ts.Name], base)
 						continue
 					}
-					fields = append(fields, fld.Names...)
+					for _, n := range fld.Names {
+						fields = append(fields, n)
+						ftypes = append(ftypes, fld.Type)
+					}
 				}
 				g.structFields[ts.Name] = fields
+				g.structFieldTypes[ts.Name] = ftypes
+			} else if it, ok := ts.Type.(*ast.InterfaceType); ok {
+				g.ifaces[ts.Name] = it
+				g.ifaceOrder = append(g.ifaceOrder, ts.Name)
 			} else {
 				g.aliases[ts.Name] = ts.Type
 			}
 		}
 	}
+}
+
+// buildInterfaces computes each interface's method set, flattening embedded
+// interfaces (which must be declared earlier in the file).
+func (g *Generator) buildInterfaces() {
+	for _, name := range g.ifaceOrder {
+		it := g.ifaces[name]
+		var methods []ifaceMeth
+		for _, f := range it.Methods {
+			if len(f.Names) == 0 {
+				continue
+			}
+			mname := f.Names[0]
+			if f.Type == nil {
+				// embedded interface
+				g.ifaceEmbeds[name] = append(g.ifaceEmbeds[name], mname)
+				methods = append(methods, g.ifaceOwn[mname]...)
+				continue
+			}
+			if ft, ok := f.Type.(*ast.FuncType); ok {
+				methods = append(methods, ifaceMeth{name: mname, ft: ft})
+			}
+		}
+		g.ifaceOwn[name] = methods
+	}
+}
+
+// methodSet is the set of method names of a type, including promoted methods.
+func (g *Generator) methodSet(typeName string) map[string]bool {
+	out := map[string]bool{}
+	for _, fd := range g.methods[typeName] {
+		out[fd.Name] = true
+	}
+	for _, base := range g.embedOf[typeName] {
+		for k := range g.methodSet(base) {
+			out[k] = true
+		}
+	}
+	return out
+}
+
+// implementsOf lists the named interfaces a type satisfies, reduced to the
+// maximal ones (an interface embedded by another satisfied interface is
+// dropped to avoid a diamond).
+func (g *Generator) implementsOf(typeName string) []string {
+	ms := g.methodSet(typeName)
+	var satisfied []string
+	for _, iname := range g.ifaceOrder {
+		need := g.ifaceOwn[iname]
+		if len(need) == 0 {
+			continue
+		}
+		ok := true
+		for _, m := range need {
+			if !ms[m.name] {
+				ok = false
+				break
+			}
+		}
+		if ok {
+			satisfied = append(satisfied, iname)
+		}
+	}
+	var out []string
+	for _, i := range satisfied {
+		redundant := false
+		for _, j := range satisfied {
+			if i == j {
+				continue
+			}
+			if g.ifaceDerives(j, i) {
+				redundant = true
+				break
+			}
+		}
+		if !redundant {
+			out = append(out, i)
+		}
+	}
+	return out
+}
+
+// ifaceDerives reports whether interface j embeds i transitively.
+func (g *Generator) ifaceDerives(j, i string) bool {
+	for _, b := range g.ifaceEmbeds[j] {
+		if b == i || g.ifaceDerives(b, i) {
+			return true
+		}
+	}
+	return false
+}
+
+// recordParams records the declared types of named parameters/locals so later
+// stages can tell interface values from concrete ones.
+func (g *Generator) recordParams(fields []*ast.Field) {
+	for _, fld := range fields {
+		for _, n := range fld.Names {
+			g.types[n] = fld.Type
+			if g.isPtrType(fld.Type) {
+				g.ptrVars[n] = true
+			}
+		}
+	}
+}
+
+// isPtrType reports whether a type is represented as a C++ pointer (a named
+// interface or an explicit pointer type).
+func (g *Generator) isPtrType(e ast.Expr) bool {
+	switch t := e.(type) {
+	case *ast.PtrType, *ast.StarExpr:
+		return true
+	case *ast.Ident:
+		if _, ok := g.ifaces[t.Name]; ok {
+			if len(g.ifaceOwn[t.Name]) > 0 || len(g.ifaceEmbeds[t.Name]) > 0 {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// namedIface reports whether an expression's static type is a named interface.
+func (g *Generator) namedIface(e ast.Expr) bool {
+	id, ok := e.(*ast.Ident)
+	if !ok {
+		return false
+	}
+	t, ok := g.types[id.Name]
+	if !ok {
+		return false
+	}
+	tid, ok := t.(*ast.Ident)
+	if !ok {
+		return false
+	}
+	_, ok = g.ifaces[tid.Name]
+	return ok
 }
 
 // baseTypeName returns the bare type name and whether it is a pointer type.
@@ -199,6 +361,11 @@ func (g *Generator) cppType(e ast.Expr) string {
 		case "error":
 			return "std::string"
 		}
+		if _, ok := g.ifaces[t.Name]; ok {
+			if len(g.ifaceOwn[t.Name]) > 0 || len(g.ifaceEmbeds[t.Name]) > 0 {
+				return t.Name + "*"
+			}
+		}
 		return t.Name
 	case *ast.SliceType:
 		return "std::vector<" + g.cppType(t.Elem) + ">"
@@ -242,6 +409,11 @@ func (g *Generator) zeroValue(e ast.Expr) string {
 		if g.structNames[t.Name] {
 			return "{}"
 		}
+		if _, ok := g.ifaces[t.Name]; ok {
+			if len(g.ifaceOwn[t.Name]) > 0 || len(g.ifaceEmbeds[t.Name]) > 0 {
+				return "nullptr"
+			}
+		}
 		if target, ok := g.aliases[t.Name]; ok {
 			return g.zeroValue(target)
 		}
@@ -259,10 +431,50 @@ func (g *Generator) zeroValue(e ast.Expr) string {
 // ------------------------------------------------------------------ decls
 
 func (g *Generator) emitDecls(decls []ast.Decl) {
-	// 1. Type declarations first, so prototypes and bodies can name them.
+	// Forward-declare named types so interfaces can name types declared later.
 	for _, d := range decls {
 		if gd, ok := d.(*ast.GenDecl); ok && gd.Tok == "type" {
-			g.emitGenDecl(gd, true)
+			for _, s := range gd.Specs {
+				ts, ok := s.(*ast.TypeSpec)
+				if !ok {
+					continue
+				}
+				switch ts.Type.(type) {
+				case *ast.StructType:
+					g.writeln("class %s;", ts.Name)
+				case *ast.InterfaceType:
+					// only when it becomes a class (empty interfaces alias `any`)
+					if len(g.ifaceOwn[ts.Name]) > 0 || len(g.ifaceEmbeds[ts.Name]) > 0 {
+						g.writeln("class %s;", ts.Name)
+					}
+				}
+			}
+		}
+	}
+	g.writeln("")
+	// 0. Interfaces first: abstract classes that structs later derive from.
+	for _, d := range decls {
+		if gd, ok := d.(*ast.GenDecl); ok && gd.Tok == "type" {
+			for _, s := range gd.Specs {
+				if ts, ok := s.(*ast.TypeSpec); ok {
+					if _, isIface := ts.Type.(*ast.InterfaceType); isIface {
+						g.emitTypeSpec(ts)
+					}
+				}
+			}
+		}
+	}
+	// 1. The remaining type declarations.
+	for _, d := range decls {
+		if gd, ok := d.(*ast.GenDecl); ok && gd.Tok == "type" {
+			for _, s := range gd.Specs {
+				if ts, ok := s.(*ast.TypeSpec); ok {
+					if _, isIface := ts.Type.(*ast.InterfaceType); isIface {
+						continue
+					}
+					g.emitTypeSpec(ts)
+				}
+			}
 		}
 	}
 	// 2. Forward declarations for free functions.
@@ -375,6 +587,7 @@ func (g *Generator) emitFunc(fd *ast.FuncDecl) {
 	g.writeln("{")
 	g.indent++
 	g.curResults = fd.Type.Results
+	g.recordParams(fd.Type.Params)
 	savedRecv, savedPtr := g.recvName, g.recvPtr
 	g.recvName, g.recvPtr = "", false
 	if fd.Name == "main" {
@@ -410,7 +623,9 @@ func (g *Generator) emitMethod(fd *ast.FuncDecl) {
 	g.recvName = ""
 	if len(rf.Names) > 0 {
 		g.recvName = rf.Names[0]
+		g.types[g.recvName] = rf.Type
 	}
+	g.recordParams(fd.Type.Params)
 	g.emitStmts(fd.Body.List)
 	g.recvName, g.recvPtr = savedRecv, savedPtr
 	g.indent--
@@ -420,17 +635,73 @@ func (g *Generator) emitMethod(fd *ast.FuncDecl) {
 // emitPromoted forwards a method of an embedded type.
 func (g *Generator) emitPromoted(fd *ast.FuncDecl, base string) {
 	params := g.emitParams(fd.Type.Params)
-	ret := g.resultType(fd.Type.Results)
 	var names []string
 	for _, fld := range fd.Type.Params {
 		names = append(names, fld.Names...)
 	}
-	g.writeln("auto %s(%s) -> %s", fd.Name, params, ret)
+	// Return type is deduced, so the embedded member (named after its type)
+	// cannot shadow it.
+	g.writeln("auto %s(%s) -> %s", fd.Name, params, g.resultType(fd.Type.Results))
 	g.writeln("{")
 	g.indent++
-	g.writeln("return %s.%s(%s);", base, fd.Name, strings.Join(names, ", "))
+	g.writeln("return %s_.%s(%s);", base, fd.Name, strings.Join(names, ", "))
 	g.indent--
 	g.writeln("}")
+}
+
+// memberName maps a composite-literal key to its C++ member name.
+func (g *Generator) memberName(structName, key string) string {
+	for _, b := range g.embedOf[structName] {
+		if b == key {
+			return key + "_"
+		}
+	}
+	return key
+}
+
+// emitFieldsCtor emits a constructor taking every field (all defaulted), for
+// types that are polymorphic and therefore not aggregates.
+func (g *Generator) emitFieldsCtor(typeName string) {
+	names := g.structFields[typeName]
+	ftypes := g.structFieldTypes[typeName]
+	var params, body []string
+	for i, n := range names {
+		pn := fmt.Sprintf("_f%d", i)
+		params = append(params, fmt.Sprintf("%s %s = %s", g.cppType(ftypes[i]), pn, g.zeroValue(ftypes[i])))
+		body = append(body, fmt.Sprintf("%s = %s;", n, pn))
+	}
+	g.writeln("%s(%s) { %s }", typeName, strings.Join(params, ", "), strings.Join(body, " "))
+}
+
+// emitCtorCall builds a constructor call for a composite literal of a
+// non-aggregate struct type, in field-declaration order.
+func (g *Generator) emitCtorCall(typeName string, elts []ast.Expr) string {
+	names := g.structFields[typeName]
+	ftypes := g.structFieldTypes[typeName]
+	provided := map[string]string{}
+	var positional []string
+	for _, e := range elts {
+		if kv, ok := e.(*ast.KeyValueExpr); ok {
+			if id, ok := kv.Key.(*ast.Ident); ok {
+				provided[id.Name] = g.emitExpr(kv.Value)
+				continue
+			}
+		}
+		positional = append(positional, g.emitExpr(e))
+	}
+	var args []string
+	for i, n := range names {
+		if v, ok := provided[n]; ok {
+			args = append(args, v)
+			continue
+		}
+		if i < len(positional) {
+			args = append(args, positional[i])
+			continue
+		}
+		args = append(args, g.zeroValue(ftypes[i]))
+	}
+	return fmt.Sprintf("%s(%s)", typeName, strings.Join(args, ", "))
 }
 
 func (g *Generator) emitGenDecl(gd *ast.GenDecl, topLevel bool) {
@@ -453,14 +724,56 @@ func (g *Generator) emitGenDecl(gd *ast.GenDecl, topLevel bool) {
 }
 
 func (g *Generator) emitTypeSpec(ts *ast.TypeSpec) {
-	if st, ok := ts.Type.(*ast.StructType); ok {
-		g.writeln("class %s { public:", ts.Name)
+	if _, ok := ts.Type.(*ast.InterfaceType); ok {
+		bases := g.ifaceEmbeds[ts.Name]
+		methods := g.ifaceOwn[ts.Name]
+		if len(bases) == 0 && len(methods) == 0 {
+			g.writeln("using %s = go2cpp::any;", ts.Name)
+			return
+		}
+		base := ""
+		if len(bases) > 0 {
+			var parts []string
+			for _, b := range bases {
+				parts = append(parts, "public "+b)
+			}
+			base = " : " + strings.Join(parts, ", ")
+		}
+		g.writeln("class %s%s { public:", ts.Name, base)
 		g.indent++
+		g.writeln("virtual ~%s() {}", ts.Name)
+		for _, m := range methods {
+			params := g.emitParams(m.ft.Params)
+			ret := g.resultType(m.ft.Results)
+			g.writeln("virtual %s %s(%s) = 0;", ret, m.name, params)
+		}
+		g.indent--
+		g.writeln("};")
+		g.writeln("")
+		return
+	}
+	if st, ok := ts.Type.(*ast.StructType); ok {
+		base := ""
+		bases := g.implementsOf(ts.Name)
+		if len(bases) > 0 {
+			var parts []string
+			for _, b := range bases {
+				parts = append(parts, "public "+b)
+			}
+			base = " : " + strings.Join(parts, ", ")
+		}
+		g.writeln("class %s%s { public:", ts.Name, base)
+		g.indent++
+		if len(bases) > 0 {
+			// A polymorphic type is not an aggregate, so provide a constructor.
+			g.emitFieldsCtor(ts.Name)
+		}
 		for _, fld := range st.Fields {
 			if len(fld.Names) == 0 {
-				// embedded field: an object member named after its type
+				// embedded field: an object member named after its type, with a
+				// trailing underscore so it does not shadow the type name.
 				base, _ := baseTypeName(fld.Type)
-				g.writeln("%s %s;", base, base)
+				g.writeln("%s %s_;", base, base)
 				continue
 			}
 			typ := g.cppType(fld.Type)
@@ -518,6 +831,9 @@ func (g *Generator) emitValueSpec(vs *ast.ValueSpec, isConst bool) {
 		for _, n := range vs.Names {
 			g.writeln("%s %s = %s;", g.cppType(vs.Type), n, g.zeroValue(vs.Type))
 			g.recordType(n, vs.Type)
+			if g.isPtrType(vs.Type) {
+				g.ptrVars[n] = true
+			}
 		}
 		return
 	}
@@ -531,6 +847,9 @@ func (g *Generator) emitValueSpec(vs *ast.ValueSpec, isConst bool) {
 		if vs.Type != nil {
 			g.writeln("%s %s = %s;", g.cppType(vs.Type), n, val)
 			g.recordType(n, vs.Type)
+			if g.isPtrType(vs.Type) {
+				g.ptrVars[n] = true
+			}
 		} else if i < len(vs.Values) && isStringLit(vs.Values[i]) {
 			g.writeln("std::string %s = %s;", n, val)
 		} else {
@@ -1097,7 +1416,6 @@ func (g *Generator) emitCommClause(c *ast.CommClause, n, i int) {
 
 // emitTypeSwitch lowers `switch v := x.(type)` to an is<T>()/as<T>() if-chain.
 func (g *Generator) emitTypeSwitch(st *ast.TypeSwitchStmt) {
-	g.needAny = true
 	varName := ""
 	var X ast.Expr
 	if as, ok := st.Assign.(*ast.AssignStmt); ok && len(as.Rhs) == 1 {
@@ -1114,6 +1432,11 @@ func (g *Generator) emitTypeSwitch(st *ast.TypeSwitchStmt) {
 		g.fail("unsupported type switch")
 		return
 	}
+	if g.namedIface(X) {
+		g.emitIfaceTypeSwitch(st, varName, X)
+		return
+	}
+	g.needAny = true
 	g.writeln("{")
 	g.indent++
 	g.writeln("auto _tsw = %s;", g.emitExpr(X))
@@ -1163,6 +1486,53 @@ func (g *Generator) emitTypeSwitch(st *ast.TypeSwitchStmt) {
 	g.writeln("}")
 }
 
+// emitIfaceTypeSwitch lowers a type switch on a named interface value to a
+// chain of dynamic_cast tests.
+func (g *Generator) emitIfaceTypeSwitch(st *ast.TypeSwitchStmt, varName string, X ast.Expr) {
+	g.writeln("{")
+	g.indent++
+	g.writeln("auto _tsw = %s;", g.emitExpr(X))
+	for i, c := range st.Body {
+		cond := ""
+		if len(c.List) > 0 {
+			var conds []string
+			for _, te := range c.List {
+				if id, ok := te.(*ast.Ident); ok && id.Name == "nil" {
+					conds = append(conds, "_tsw == nullptr")
+					continue
+				}
+				conds = append(conds, fmt.Sprintf("dynamic_cast<%s>(_tsw) != nullptr", g.cppType(te)))
+			}
+			cond = strings.Join(conds, " || ")
+		}
+		switch {
+		case i == 0 && cond == "":
+			g.writeln("{")
+		case i == 0:
+			g.writeln("if (%s)", cond)
+			g.writeln("{")
+		case cond == "":
+			g.writeln("else")
+			g.writeln("{")
+		default:
+			g.writeln("else if (%s)", cond)
+			g.writeln("{")
+		}
+		g.indent++
+		if varName != "" && varName != "_" && len(c.List) == 1 {
+			if id, ok := c.List[0].(*ast.Ident); !ok || id.Name != "nil" {
+				g.writeln("auto %s = dynamic_cast<%s>(_tsw);", varName, g.cppType(c.List[0]))
+			}
+		}
+		g.emitStmts(c.Body)
+		g.indent--
+		g.writeln("}")
+	}
+	g.indent--
+	g.writeln("}")
+}
+
+// emitDefer emits a deferred call as a scope guard.
 func (g *Generator) emitDefer(d *ast.DeferStmt) {
 	g.deferCounter++
 	body := g.deferBody(d.Call)
@@ -1245,6 +1615,13 @@ func (g *Generator) emitExpr(e ast.Expr) string {
 	case *ast.TypeAssertExpr:
 		if t.Type == nil {
 			return g.emitExpr(t.X)
+		}
+		if g.namedIface(t.X) {
+			ct := g.cppType(t.Type)
+			if strings.HasSuffix(ct, "*") {
+				return fmt.Sprintf("dynamic_cast<%s>(%s)", ct, g.emitExpr(t.X))
+			}
+			return fmt.Sprintf("(*dynamic_cast<%s*>(%s))", ct, g.emitExpr(t.X))
 		}
 		g.needAny = true
 		return fmt.Sprintf("(%s).as<%s>()", g.emitExpr(t.X), g.cppType(t.Type))
@@ -1567,11 +1944,14 @@ func (g *Generator) emitComposite(c *ast.CompositeLit) string {
 		}
 		return fmt.Sprintf("std::vector<%s>{ %s }", g.cppType(t.Elem), strings.Join(elts, ", "))
 	case *ast.Ident:
+		if len(g.implementsOf(t.Name)) > 0 {
+			return g.emitCtorCall(t.Name, c.Elts)
+		}
 		var elts []string
 		for _, e := range c.Elts {
 			if kv, ok := e.(*ast.KeyValueExpr); ok {
-				if name, ok := kv.Key.(*ast.Ident); ok && !g.structNames[kv.Key.(*ast.Ident).Name] {
-					elts = append(elts, "."+name.Name+" = "+g.emitExpr(kv.Value))
+				if name, ok := kv.Key.(*ast.Ident); ok && !g.structNames[name.Name] {
+					elts = append(elts, "."+g.memberName(t.Name, name.Name)+" = "+g.emitExpr(kv.Value))
 					continue
 				}
 			}
@@ -1694,6 +2074,32 @@ void _format_output(std::ostream& out, T x)
     } else {
         out << x;
     }
+}
+
+template <typename T>
+void _format_output(std::ostream& out, const std::vector<T>& v)
+{
+    out << "[";
+    for (std::size_t i = 0; i < v.size(); i++) {
+        if (i) out << " ";
+        _format_output(out, v[i]);
+    }
+    out << "]";
+}
+
+template <typename K, typename V>
+void _format_output(std::ostream& out, const std::unordered_map<K, V>& m)
+{
+    out << "map[";
+    bool _first = true;
+    for (const auto& _kv : m) {
+        if (!_first) out << " ";
+        _first = false;
+        _format_output(out, _kv.first);
+        out << ":";
+        _format_output(out, _kv.second);
+    }
+    out << "]";
 }
 `
 

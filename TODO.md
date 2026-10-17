@@ -5,5 +5,7 @@
 - [x] Generate the sprintf function programatically, but only for the needed amount of arguments.
 - [x] `chan` / `go` / `select` (runtime: `channel<T>`, `go()`, try-based select)
 - [x] `interface{}` with type assertions and type switches
-- [ ] Method-bearing `interface` dynamic dispatch (named interfaces with methods)
-- [ ] Self-compilation of a refactored, subset-only transpiler core
+- [x] Named `interface` dispatch (abstract base classes + virtual methods)
+- [ ] Cross-package `import` resolution
+- [ ] Stdlib primitives for the core (unicode, utf8, fmt, strings)
+- [ ] Self-compile the whole core (ast/lexer/parser/codegen) end to end

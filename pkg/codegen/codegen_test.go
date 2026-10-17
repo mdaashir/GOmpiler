@@ -100,6 +100,24 @@ func main() { _ = strings.Contains("a", "b") }
 	}
 }
 
+func TestNamedInterfaceDispatch(t *testing.T) {
+	out := generate(t, `package main
+type Animal interface{ Speak() string }
+type Dog struct{ name string }
+func (d *Dog) Speak() string { return d.name }
+func main() { var a Animal = &Dog{name: "x"}; _ = a.Speak() }
+`)
+	if !strings.Contains(out, "class Animal { public:") {
+		t.Errorf("expected an abstract Animal class, got:\n%s", out)
+	}
+	if !strings.Contains(out, "virtual std::string Speak() = 0;") {
+		t.Errorf("expected a pure virtual Speak, got:\n%s", out)
+	}
+	if !strings.Contains(out, "class Dog : public Animal") {
+		t.Errorf("expected Dog to derive from Animal, got:\n%s", out)
+	}
+}
+
 func TestInterfaceAny(t *testing.T) {
 	out := generate(t, `package main
 func id(x interface{}) interface{} { return x }
