@@ -34,6 +34,12 @@ type Package struct {
 	Decls []ast.Decl
 }
 
+// ifaceMeth is one method in an interface's method set.
+type ifaceMeth struct {
+	name string
+	ft   *ast.FuncType
+}
+
 // Generator accumulates generated C++ source.
 type Generator struct {
 	sb     strBuilder
@@ -60,6 +66,7 @@ type Generator struct {
 
 	fieldTypes  map[string]ast.Expr
 	funcResults map[string]ast.Expr
+	declared    map[string]bool
 
 	needContains   bool
 	needHasPrefix  bool
@@ -90,12 +97,6 @@ type Generator struct {
 	err        error
 }
 
-// ifaceMeth is one method in an interface's method set.
-type ifaceMeth struct {
-	name string
-	ft   *ast.FuncType
-}
-
 // Generate compiles a parsed file to C++ source text.
 func Generate(f *ast.File) (string, error) {
 	g := &Generator{
@@ -114,6 +115,7 @@ func Generate(f *ast.File) (string, error) {
 		ptrFuncs:         map[string]bool{},
 		fieldTypes:       map[string]ast.Expr{},
 		funcResults:      map[string]ast.Expr{},
+		declared:         map[string]bool{},
 	}
 	g.collectDecls(f.Decls)
 	g.buildInterfaces()
@@ -143,6 +145,7 @@ func GenerateProgram(pkgs []*Package) (string, error) {
 		ptrFuncs:         map[string]bool{},
 		fieldTypes:       map[string]ast.Expr{},
 		funcResults:      map[string]ast.Expr{},
+		declared:         map[string]bool{},
 	}
 	for _, p := range pkgs {
 		if p.Name != "main" {
@@ -502,6 +505,10 @@ func (g *Generator) emitMapCommaOK(lhs0, lhs1, rhs ast.Expr) bool {
 	m := g.emitExpr(ix.X)
 	g.writeln("auto %s = (%s).find(%s);", tmp, m, g.emitExpr(ix.Index))
 	g.writeln("%s %s = (%s != (%s).end()) ? %s->second : %s;", g.cppType(mt.Value), vName, tmp, m, tmp, g.zeroValue(mt.Value))
+	g.types[vName] = mt.Value
+	if g.isPtrType(mt.Value) {
+		g.ptrVars[vName] = true
+	}
 	if okName != "" && okName != "_" {
 		g.writeln("bool %s = (%s != (%s).end());", okName, tmp, m)
 	}
@@ -549,6 +556,7 @@ func (g *Generator) subGenerator() *Generator {
 		ptrFuncs:         g.ptrFuncs,
 		fieldTypes:       g.fieldTypes,
 		funcResults:      g.funcResults,
+		declared:         map[string]bool{},
 	}
 }
 
@@ -939,6 +947,9 @@ func (g *Generator) emitFunc(fd *ast.FuncDecl) {
 	savedTypes := g.types
 	g.types = map[string]ast.Expr{}
 	defer func() { g.types = savedTypes }()
+	savedDecl := g.declared
+	g.declared = map[string]bool{}
+	defer func() { g.declared = savedDecl }()
 	g.recordParams(fd.Type.Params)
 	if fd.Name == "main" {
 		g.emitStmts(fd.Body.List)
@@ -974,17 +985,19 @@ func (g *Generator) emitMethod(fd *ast.FuncDecl) {
 	_, ptr := baseTypeName(rf.Type)
 	savedRecv, savedPtr := g.recvName, g.recvPtr
 	g.recvPtr = ptr
-	g.recvName = ""
-	if len(rf.Names) > 0 {
-		g.recvName = rf.Names[0]
-		g.types[g.recvName] = rf.Type
-	}
 	saved := g.ptrVars
 	g.ptrVars = map[string]bool{}
 	defer func() { g.ptrVars = saved }()
 	savedTypes := g.types
 	g.types = map[string]ast.Expr{}
 	defer func() { g.types = savedTypes }()
+	savedDecl := g.declared
+	g.declared = map[string]bool{}
+	defer func() { g.declared = savedDecl }()
+	if len(rf.Names) > 0 {
+		g.recvName = rf.Names[0]
+		g.types[g.recvName] = rf.Type
+	}
 	g.recordParams(fd.Type.Params)
 	g.emitStmts(fd.Body.List)
 	g.recvName, g.recvPtr = savedRecv, savedPtr
@@ -1493,6 +1506,12 @@ func (g *Generator) emitDefine(a *ast.AssignStmt) {
 		if isPointerExpr(a.Rhs[i]) || g.callsPtrFunc(a.Rhs[i]) {
 			g.ptrVars[id.Name] = true
 		}
+		if ta, ok := a.Rhs[i].(*ast.TypeAssertExpr); ok && ta.Type != nil {
+			g.types[id.Name] = ta.Type
+			if g.isPtrType(ta.Type) {
+				g.ptrVars[id.Name] = true
+			}
+		}
 		g.recordTypeExpr(id.Name, a.Rhs[i])
 	}
 }
@@ -1589,7 +1608,10 @@ func (g *Generator) emitIf(st *ast.IfStmt) {
 }
 
 func (g *Generator) emitIfInline(st *ast.IfStmt) {
-	if st.Init != nil {
+	wrap := st.Init != nil
+	if wrap {
+		g.writeln("{")
+		g.indent++
 		g.emitInitStmt(st.Init)
 	}
 	g.writeln("if (%s)", g.emitExpr(st.Cond))
@@ -1602,6 +1624,10 @@ func (g *Generator) emitIfInline(st *ast.IfStmt) {
 			g.writeln("else")
 			g.emitBlock(blk)
 		}
+	}
+	if wrap {
+		g.indent--
+		g.writeln("}")
 	}
 }
 
