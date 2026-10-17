@@ -37,8 +37,10 @@ type Generator struct {
 	needStrconv    bool
 	usesPrint      bool
 	usesBuiltinOut bool
+	needRuntime    bool
 
 	switchCounter int
+	selectCounter int
 	deferCounter  int
 	iotaIndex     int
 
@@ -190,6 +192,7 @@ func (g *Generator) cppType(e ast.Expr) string {
 	case *ast.StarExpr:
 		return g.cppType(t.X) + "*"
 	case *ast.ChanType:
+		g.needRuntime = true
 		return "go2cpp::channel<" + g.cppType(t.Value) + ">"
 	case *ast.SelectorExpr:
 		return t.Sel
@@ -520,6 +523,8 @@ func (g *Generator) emitStmt(s ast.Stmt) {
 		g.emitRange(t)
 	case *ast.SwitchStmt:
 		g.emitSwitch(t)
+	case *ast.SelectStmt:
+		g.emitSelect(t)
 	case *ast.BranchStmt:
 		g.emitBranch(t)
 	case *ast.DeferStmt:
@@ -534,9 +539,11 @@ func (g *Generator) emitStmt(s ast.Stmt) {
 		g.indent--
 		g.writeln("}")
 	case *ast.GoStmt:
+		g.needRuntime = true
 		g.writeln("go2cpp::go([&]() { %s; });", g.emitExpr(t.Call))
 	case *ast.SendStmt:
-		g.writeln("%s.send(%s);", g.emitExpr(t.Chan), g.emitExpr(t.Value))
+		g.needRuntime = true
+		g.writeln("(%s).send(%s);", g.emitExpr(t.Chan), g.emitExpr(t.Value))
 	default:
 		g.fail("unsupported statement %T", s)
 	}
@@ -901,6 +908,90 @@ func (g *Generator) emitBranch(b *ast.BranchStmt) {
 	}
 }
 
+// emitSelect lowers `select` to a try-each-case loop. Each case is attempted
+// non-blockingly; when nothing is ready the iteration yields and retries. A
+// `default` clause runs immediately. This is not the most efficient scheduling
+// but it is correct for the common patterns and needs no central scheduler.
+func (g *Generator) emitSelect(st *ast.SelectStmt) {
+	g.needRuntime = true
+	g.selectCounter++
+	n := g.selectCounter
+	g.writeln("{")
+	g.indent++
+	g.writeln("bool _sel%d = false;", n)
+	g.writeln("while (!_sel%d)", n)
+	g.writeln("{")
+	g.indent++
+	g.writeln("do")
+	g.writeln("{")
+	g.indent++
+	for i, c := range st.Body {
+		g.emitCommClause(c, n, i)
+	}
+	g.indent--
+	g.writeln("} while (false);")
+	g.writeln("if (!_sel%d) std::this_thread::yield();", n)
+	g.indent--
+	g.writeln("}")
+	g.indent--
+	g.writeln("}")
+}
+
+func (g *Generator) emitCommClause(c *ast.CommClause, n, i int) {
+	finish := func() {
+		g.emitStmts(c.Body)
+		g.writeln("_sel%d = true;", n)
+		g.writeln("break;")
+	}
+	if c.Comm == nil {
+		// default clause
+		finish()
+		return
+	}
+	switch comm := c.Comm.(type) {
+	case *ast.SendStmt:
+		g.writeln("if ((%s).try_send(%s))", g.emitExpr(comm.Chan), g.emitExpr(comm.Value))
+		g.writeln("{")
+		g.indent++
+		finish()
+		g.indent--
+		g.writeln("}")
+	case *ast.AssignStmt:
+		if len(comm.Rhs) == 1 {
+			if u, ok := comm.Rhs[0].(*ast.UnaryExpr); ok && u.Op == "<-" {
+				ch := g.emitExpr(u.X)
+				g.writeln("std::remove_reference_t<decltype(%s)>::value_type _selv%d_%d;", ch, n, i)
+				g.writeln("if ((%s).try_recv(_selv%d_%d))", ch, n, i)
+				g.writeln("{")
+				g.indent++
+				if id, ok := comm.Lhs[0].(*ast.Ident); ok && id.Name != "_" {
+					g.writeln("auto %s = _selv%d_%d;", id.Name, n, i)
+				}
+				finish()
+				g.indent--
+				g.writeln("}")
+				return
+			}
+		}
+		g.fail("unsupported select assignment")
+	case *ast.ExprStmt:
+		if u, ok := comm.X.(*ast.UnaryExpr); ok && u.Op == "<-" {
+			ch := g.emitExpr(u.X)
+			g.writeln("std::remove_reference_t<decltype(%s)>::value_type _selv%d_%d;", ch, n, i)
+			g.writeln("if ((%s).try_recv(_selv%d_%d))", ch, n, i)
+			g.writeln("{")
+			g.indent++
+			finish()
+			g.indent--
+			g.writeln("}")
+			return
+		}
+		g.fail("unsupported select expression")
+	default:
+		g.fail("unsupported select case %T", c.Comm)
+	}
+}
+
 func (g *Generator) emitDefer(d *ast.DeferStmt) {
 	g.deferCounter++
 	body := g.deferBody(d.Call)
@@ -941,6 +1032,10 @@ func (g *Generator) emitExpr(e ast.Expr) string {
 		}
 		return fmt.Sprintf("(%s %s %s)", g.emitExpr(t.X), op, g.emitExpr(t.Y))
 	case *ast.UnaryExpr:
+		if t.Op == "<-" {
+			g.needRuntime = true
+			return "(" + g.emitExpr(t.X) + ").recv()"
+		}
 		if t.Op == "&" {
 			if _, ok := t.X.(*ast.CompositeLit); ok {
 				return "new " + g.emitExpr(t.X)
@@ -1109,6 +1204,14 @@ func (g *Generator) emitBuiltinConv(name string, c *ast.CallExpr) string {
 			}
 			if mt, ok := c.Args[0].(*ast.MapType); ok {
 				return fmt.Sprintf("std::unordered_map<%s, %s>{}", g.cppType(mt.Key), g.cppType(mt.Value))
+			}
+			if ct, ok := c.Args[0].(*ast.ChanType); ok {
+				g.needRuntime = true
+				n := ""
+				if len(c.Args) >= 2 {
+					n = g.emitExpr(c.Args[1])
+				}
+				return fmt.Sprintf("go2cpp::channel<%s>(%s)", g.cppType(ct.Value), n)
 			}
 		}
 		return "{}"
@@ -1347,8 +1450,18 @@ func (g *Generator) preamble() string {
 	}
 	b.WriteString("#include <functional>\n")
 	b.WriteString("#include <algorithm>\n")
+	if g.needRuntime {
+		b.WriteString("#include <thread>\n")
+		b.WriteString("#include <mutex>\n")
+		b.WriteString("#include <condition_variable>\n")
+		b.WriteString("#include <deque>\n")
+		b.WriteString("#include <stdexcept>\n")
+	}
 	b.WriteString("\n")
 
+	if g.needRuntime {
+		b.WriteString(helperConcurrency)
+	}
 	if g.usesPrint {
 		b.WriteString(strconvHelperFormatOutput)
 	}
@@ -1512,6 +1625,84 @@ inline std::tuple<double, bool> strconvParseFloat(const std::string& s, int) {
 inline std::tuple<long, bool> strconvParseInt(const std::string& s, int, int) {
     try { return { std::stol(s, nullptr, 0), true }; } catch (...) { return { 0, false }; }
 }
+`
+
+const helperConcurrency = `
+namespace go2cpp {
+
+// channel is a Go-like channel: cap()==0 gives an unbuffered rendezvous,
+// cap()>0 a bounded buffer.
+template <typename T>
+class channel {
+public:
+    using value_type = T;
+    explicit channel(std::size_t cap = 0) : cap_(cap) {}
+
+    void send(const T& v) {
+        std::unique_lock<std::mutex> lk(m_);
+        while (true) {
+            if (closed_) throw std::runtime_error("send on closed channel");
+            if (recv_waiting_ > 0 || (cap_ > 0 && buf_.size() < cap_)) {
+                buf_.push_back(v);
+                cv_.notify_all();
+                return;
+            }
+            cv_.wait(lk);
+        }
+    }
+
+    T recv() {
+        std::unique_lock<std::mutex> lk(m_);
+        recv_waiting_++;
+        cv_.notify_all();
+        cv_.wait(lk, [&] { return !buf_.empty() || closed_; });
+        recv_waiting_--;
+        if (buf_.empty()) return T{};
+        T v = buf_.front();
+        buf_.pop_front();
+        cv_.notify_all();
+        return v;
+    }
+
+    bool try_recv(T& out) {
+        std::unique_lock<std::mutex> lk(m_);
+        if (buf_.empty()) return false;
+        out = buf_.front();
+        buf_.pop_front();
+        cv_.notify_all();
+        return true;
+    }
+
+    bool try_send(const T& v) {
+        std::unique_lock<std::mutex> lk(m_);
+        if (closed_) return false;
+        if (recv_waiting_ > 0 || (cap_ > 0 && buf_.size() < cap_)) {
+            buf_.push_back(v);
+            cv_.notify_all();
+            return true;
+        }
+        return false;
+    }
+
+    void close() {
+        std::unique_lock<std::mutex> lk(m_);
+        closed_ = true;
+        cv_.notify_all();
+    }
+
+private:
+    std::mutex m_;
+    std::condition_variable cv_;
+    std::deque<T> buf_;
+    std::size_t cap_;
+    bool closed_ = false;
+    int recv_waiting_ = 0;
+};
+
+template <typename F>
+void go(F f) { std::thread(std::move(f)).detach(); }
+
+} // namespace go2cpp
 `
 
 const helperSlice = `

@@ -892,6 +892,8 @@ func (p *Parser) parseOperand() ast.Expr {
 		return p.parseType()
 	case p.at("struct"):
 		return p.parseType()
+	case p.at("chan"):
+		return p.parseType()
 	default:
 		p.fail("expected expression, got %s", t)
 		return nil

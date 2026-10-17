@@ -21,6 +21,7 @@ tests=(
   trimspace printf multiple prefix contains if var output_char2 var_zero
   output_char const continue types if_minus_one goto switch hello sprintf
   strings_index strings_replace strings_suffix strings_split methods
+  chan_unbuffered chan_buffered goroutine select_chan select_default
 )
 
 # Programs whose output word order is unspecified (map iteration order).
@@ -38,7 +39,7 @@ for t in "${tests[@]}"; do
   if ! ./go2cpp -S -o "$tmp/$t.cpp" "$src" 2>"$tmp/err"; then
     echo "TRANSPILE FAIL: $t"; head -5 "$tmp/err"; fail=$((fail+1)); failed+=("$t"); continue
   fi
-  if ! "$CXX" -std=c++2a -O2 -fpermissive -Wfatal-errors -o "$tmp/$t" "$tmp/$t.cpp" 2>"$tmp/err"; then
+  if ! "$CXX" -std=c++2a -O2 -fpermissive -Wfatal-errors -pthread -o "$tmp/$t" "$tmp/$t.cpp" 2>"$tmp/err"; then
     echo "COMPILE FAIL: $t"; head -5 "$tmp/err"; fail=$((fail+1)); failed+=("$t"); continue
   fi
 
