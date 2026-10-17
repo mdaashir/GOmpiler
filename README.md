@@ -197,7 +197,7 @@ auto main() -> int
 
 - [x] `break`
 - [x] `case`
-- [ ] `chan`
+- [x] `chan` (buffered and unbuffered)
 - [x] `const`
 - [x] `continue`
 - [x] `default`
@@ -206,16 +206,16 @@ auto main() -> int
 - [x] `fallthrough`
 - [x] `for`
 - [x] `func`
-- [ ] `go`
+- [x] `go` (runs on `std::thread`)
 - [x] `goto`
 - [x] `if`
 - [x] `import` (partially)
-- [ ] `interface`
+- [x] `interface` (empty `interface{}` via `go2cpp::any`; method-bearing interfaces are not dynamically dispatched yet)
 - [x] `map` (needs more testing)
 - [x] `package` (partially)
 - [x] `range`
 - [x] `return`
-- [ ] `select`
+- [x] `select` (try-based scheduling over channels)
 - [x] `struct` (needs more testing)
 - [x] `switch`
 - [x] `type` (needs more testing)
