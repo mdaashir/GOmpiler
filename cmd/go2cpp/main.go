@@ -1,8 +1,8 @@
 // Command go2cpp transpiles a Go source file to C++20.
 //
-// This is the AST-based front-end. Pass -S to print the generated C++ source;
-// otherwise the generated source is piped through a C++ compiler to produce an
-// executable.
+// This is the AST-based front-end. It resolves local package imports, lowers
+// every package into a single translation unit, and (unless -S is given) pipes
+// that through a C++ compiler to produce an executable.
 package main
 
 import (
@@ -11,7 +11,10 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
+	"strings"
 
+	"github.com/mdaashir/go2cpp/pkg/ast"
 	"github.com/mdaashir/go2cpp/pkg/codegen"
 	"github.com/mdaashir/go2cpp/pkg/lexer"
 	"github.com/mdaashir/go2cpp/pkg/parser"
@@ -61,21 +64,135 @@ func writeFile(path, content string) error {
 	return os.WriteFile(path, []byte(content), 0o644)
 }
 
-// transpile runs the lexer, parser and code generator over a file.
+// transpile loads the entry file's package (and its local imports) and lowers
+// the whole program to C++.
 func transpile(path string) (string, error) {
-	src, err := os.ReadFile(path)
+	pkgs, err := loadProgram(path)
 	if err != nil {
 		return "", err
 	}
-	toks, err := lexer.New(string(src)).Scan()
+	return codegen.GenerateProgram(pkgs)
+}
+
+// loadProgram parses the package containing path plus every locally-imported
+// package, returning them in dependency order (entry package last).
+func loadProgram(entry string) ([]*codegen.Package, error) {
+	root, modPath, err := moduleRoot(entry)
 	if err != nil {
-		return "", err
+		return nil, err
 	}
-	file, err := parser.New(toks).Parse()
+
+	visited := map[string]bool{}
+	var pkgs []*codegen.Package
+
+	var load func(dir string) error
+	load = func(dir string) error {
+		abs, err := filepath.Abs(dir)
+		if err != nil {
+			return err
+		}
+		if visited[abs] {
+			return nil
+		}
+		visited[abs] = true
+
+		files, err := filepath.Glob(filepath.Join(dir, "*.go"))
+		if err != nil {
+			return err
+		}
+		var decls []ast.Decl
+		var imports []string
+		pkgName := ""
+		for _, f := range files {
+			if strings.HasSuffix(f, "_test.go") {
+				continue
+			}
+			src, err := os.ReadFile(f)
+			if err != nil {
+				return err
+			}
+			file, err := parseSource(string(src))
+			if err != nil {
+				return fmt.Errorf("%s: %w", f, err)
+			}
+			if pkgName == "" {
+				pkgName = file.Package
+			}
+			decls = append(decls, file.Decls...)
+			for _, imp := range file.Imports {
+				imports = append(imports, strings.Trim(imp.Path, "\""))
+			}
+		}
+		if pkgName == "" {
+			return nil // directory without Go files
+		}
+
+		for _, imp := range imports {
+			if d, ok := localDir(root, modPath, imp); ok {
+				if err := load(d); err != nil {
+					return err
+				}
+			}
+		}
+		pkgs = append(pkgs, &codegen.Package{Name: pkgName, Decls: decls})
+		return nil
+	}
+
+	if err := load(filepath.Dir(entry)); err != nil {
+		return nil, err
+	}
+	return pkgs, nil
+}
+
+// parseSource lexes and parses one Go source string.
+func parseSource(src string) (*ast.File, error) {
+	toks, err := lexer.New(src).Scan()
 	if err != nil {
-		return "", err
+		return nil, err
 	}
-	return codegen.Generate(file)
+	return parser.New(toks).Parse()
+}
+
+// moduleRoot walks up from entry to find the enclosing go.mod, returning the
+// module directory and its declared path.
+func moduleRoot(entry string) (string, string, error) {
+	dir, err := filepath.Abs(filepath.Dir(entry))
+	if err != nil {
+		return "", "", err
+	}
+	for {
+		data, err := os.ReadFile(filepath.Join(dir, "go.mod"))
+		if err == nil {
+			for _, line := range strings.Split(string(data), "\n") {
+				line = strings.TrimSpace(line)
+				if strings.HasPrefix(line, "module ") {
+					return dir, strings.TrimSpace(strings.TrimPrefix(line, "module ")), nil
+				}
+			}
+			return dir, "", nil
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			return "", "", fmt.Errorf("go.mod not found above %s", entry)
+		}
+		dir = parent
+	}
+}
+
+// localDir maps an import path to a local directory, if it belongs to the
+// module.
+func localDir(root, modPath, imp string) (string, bool) {
+	if modPath == "" {
+		return "", false
+	}
+	if imp == modPath {
+		return root, true
+	}
+	if strings.HasPrefix(imp, modPath+"/") {
+		rel := strings.TrimPrefix(imp, modPath+"/")
+		return filepath.Join(root, filepath.FromSlash(rel)), true
+	}
+	return "", false
 }
 
 // compileCpp pipes the generated source through a C++ compiler.

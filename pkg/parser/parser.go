@@ -13,6 +13,14 @@ import (
 	"github.com/mdaashir/go2cpp/pkg/lexer"
 )
 
+// rawItem is one comma-separated item while parsing a parameter list.
+type rawItem struct {
+	isDeferredIdent bool
+	name            string
+	names           []string
+	typ             ast.Expr
+}
+
 // Parser consumes tokens.
 type Parser struct {
 	toks []lexer.Token
@@ -207,10 +215,12 @@ func (p *Parser) parseFuncSignature() *ast.FuncType {
 	}
 	start := p.cur()
 	ft := &ast.FuncType{Position: p.posOf(start)}
-	ft.Params = p.parseFieldList().List
+	params := p.parseFieldList()
+	ft.Params = params.List
 	// results
 	if p.at("(") {
-		ft.Results = p.parseFieldList().List
+		results := p.parseFieldList()
+		ft.Results = results.List
 	} else if p.startsType() && !p.at("{") {
 		// single unnamed result
 		ft.Results = []*ast.Field{{Position: p.posOf(p.cur()), Type: p.parseType()}}
@@ -279,13 +289,6 @@ func (p *Parser) parseSpec(tok string) ast.Spec {
 }
 
 // --------------------------------------------------------------- field lists
-
-type rawItem struct {
-	isDeferredIdent bool
-	name            string
-	names           []string
-	typ             ast.Expr
-}
 
 // parseFieldList parses `( a, b int, c string )` or `( int, error )`.
 func (p *Parser) parseFieldList() *ast.FieldList {
@@ -371,7 +374,7 @@ func (p *Parser) startsType() bool {
 		return false
 	case lexer.OP:
 		switch t.Literal {
-		case "*", "[", "(", "<-":
+		case "*", "[", "(", "<-", "...":
 			return true
 		}
 	}

@@ -49,6 +49,9 @@ type Generator struct {
 	ifaceOwn    map[string][]ifaceMeth
 	ifaceEmbeds map[string][]string
 
+	pkgNames map[string]bool
+	ptrFuncs map[string]bool
+
 	needContains   bool
 	needHasPrefix  bool
 	needHasSuffix  bool
@@ -63,6 +66,10 @@ type Generator struct {
 	usesBuiltinOut bool
 	needRuntime    bool
 	needAny        bool
+	needError      bool
+	needUnicode    bool
+	needUtf8       bool
+	needGoString   bool
 
 	switchCounter int
 	selectCounter int
@@ -93,14 +100,73 @@ func Generate(f *ast.File) (string, error) {
 		ifaces:           map[string]*ast.InterfaceType{},
 		ifaceOwn:         map[string][]ifaceMeth{},
 		ifaceEmbeds:      map[string][]string{},
+		pkgNames:         map[string]bool{},
+		ptrFuncs:         map[string]bool{},
 	}
-	g.collectTypes(f)
+	g.collectDecls(f.Decls)
 	g.buildInterfaces()
 	g.emitDecls(f.Decls)
 	if g.err != nil {
 		return "", g.err
 	}
 	return g.preamble() + g.sb.String(), nil
+}
+
+// Package is one Go package's declarations, for whole-program generation.
+type Package struct {
+	Name  string
+	Decls []ast.Decl
+}
+
+// GenerateProgram lowers several packages into a single translation unit, one
+// C++ namespace per package ("main" stays at global scope).
+func GenerateProgram(pkgs []*Package) (string, error) {
+	g := &Generator{
+		structNames:      map[string]bool{},
+		structFields:     map[string][]string{},
+		structFieldTypes: map[string][]ast.Expr{},
+		aliases:          map[string]ast.Expr{},
+		types:            map[string]ast.Expr{},
+		methods:          map[string][]*ast.FuncDecl{},
+		embedOf:          map[string][]string{},
+		ptrVars:          map[string]bool{},
+		ifaces:           map[string]*ast.InterfaceType{},
+		ifaceOwn:         map[string][]ifaceMeth{},
+		ifaceEmbeds:      map[string][]string{},
+		pkgNames:         map[string]bool{},
+		ptrFuncs:         map[string]bool{},
+	}
+	for _, p := range pkgs {
+		if p.Name != "main" {
+			g.pkgNames[p.Name] = true
+		}
+	}
+	for _, p := range pkgs {
+		g.collectDecls(p.Decls)
+	}
+	g.buildInterfaces()
+	for _, p := range pkgs {
+		g.emitPackage(p)
+	}
+	if g.err != nil {
+		return "", g.err
+	}
+	return g.preamble() + g.sb.String(), nil
+}
+
+// emitPackage emits one package's declarations, namespaced unless it is `main`.
+func (g *Generator) emitPackage(p *Package) {
+	ns := p.Name != "main"
+	if ns {
+		g.writeln("namespace %s {", p.Name)
+		g.indent++
+	}
+	g.emitDecls(p.Decls)
+	if ns {
+		g.indent--
+		g.writeln("} // namespace %s", p.Name)
+		g.writeln("")
+	}
 }
 
 func (g *Generator) fail(format string, args ...interface{}) {
@@ -111,12 +177,17 @@ func (g *Generator) fail(format string, args ...interface{}) {
 
 // ---------------------------------------------------------------- pre-scan
 
-func (g *Generator) collectTypes(f *ast.File) {
-	for _, d := range f.Decls {
-		if fd, ok := d.(*ast.FuncDecl); ok && fd.Recv != nil && len(fd.Recv.List) > 0 {
-			name, _ := baseTypeName(fd.Recv.List[0].Type)
-			g.methods[name] = append(g.methods[name], fd)
-			continue
+func (g *Generator) collectDecls(decls []ast.Decl) {
+	for _, d := range decls {
+		if fd, ok := d.(*ast.FuncDecl); ok {
+			if len(fd.Type.Results) == 1 && g.isPtrType(fd.Type.Results[0].Type) {
+				g.ptrFuncs[fd.Name] = true
+			}
+			if fd.Recv != nil && len(fd.Recv.List) > 0 {
+				name, _ := baseTypeName(fd.Recv.List[0].Type)
+				g.methods[name] = append(g.methods[name], fd)
+				continue
+			}
 		}
 		gd, ok := d.(*ast.GenDecl)
 		if !ok || gd.Tok != "type" {
@@ -261,7 +332,12 @@ func (g *Generator) isPtrType(e ast.Expr) bool {
 	switch t := e.(type) {
 	case *ast.PtrType, *ast.StarExpr:
 		return true
+	case *ast.SelectorExpr:
+		return g.isIfaceName(t.Sel)
 	case *ast.Ident:
+		if t.Name == "error" {
+			return true
+		}
 		if _, ok := g.ifaces[t.Name]; ok {
 			if len(g.ifaceOwn[t.Name]) > 0 || len(g.ifaceEmbeds[t.Name]) > 0 {
 				return true
@@ -283,10 +359,24 @@ func (g *Generator) namedIface(e ast.Expr) bool {
 	}
 	tid, ok := t.(*ast.Ident)
 	if !ok {
+		if sel, ok2 := t.(*ast.SelectorExpr); ok2 {
+			return g.isIfaceName(sel.Sel)
+		}
 		return false
 	}
 	_, ok = g.ifaces[tid.Name]
 	return ok
+}
+
+// isIfaceName reports whether a bare type name denotes a named interface.
+func (g *Generator) isIfaceName(name string) bool {
+	if name == "error" {
+		return true
+	}
+	if _, ok := g.ifaces[name]; ok {
+		return len(g.ifaceOwn[name]) > 0 || len(g.ifaceEmbeds[name]) > 0
+	}
+	return false
 }
 
 // baseTypeName returns the bare type name and whether it is a pointer type.
@@ -359,7 +449,8 @@ func (g *Generator) cppType(e ast.Expr) string {
 		case "int":
 			return "int"
 		case "error":
-			return "std::string"
+			g.needError = true
+			return "go2cpp::error*"
 		}
 		if _, ok := g.ifaces[t.Name]; ok {
 			if len(g.ifaceOwn[t.Name]) > 0 || len(g.ifaceEmbeds[t.Name]) > 0 {
@@ -384,6 +475,13 @@ func (g *Generator) cppType(e ast.Expr) string {
 		g.needAny = true
 		return "go2cpp::any"
 	case *ast.SelectorExpr:
+		if id, ok := t.X.(*ast.Ident); ok && g.pkgNames[id.Name] {
+			base := id.Name + "::" + t.Sel
+			if g.isIfaceName(t.Sel) {
+				return base + "*"
+			}
+			return base
+		}
 		return t.Sel
 	case *ast.Ellipsis:
 		return g.cppType(t.Elem)
@@ -401,6 +499,8 @@ func (g *Generator) zeroValue(e ast.Expr) string {
 			return `""`
 		case "bool":
 			return "false"
+		case "error":
+			return "nullptr"
 		case "int", "int8", "int16", "int32", "int64",
 			"uint", "uint8", "uint16", "uint32", "uint64",
 			"byte", "float32", "float64", "rune":
@@ -418,10 +518,19 @@ func (g *Generator) zeroValue(e ast.Expr) string {
 			return g.zeroValue(target)
 		}
 		return "0"
-	case *ast.SliceType, *ast.MapType:
-		return "{}"
+	case *ast.SliceType:
+		return "std::vector<" + g.cppType(t.Elem) + ">{}"
+	case *ast.ArrayType:
+		return "std::vector<" + g.cppType(t.Elem) + ">{}"
+	case *ast.MapType:
+		return "std::unordered_map<" + g.cppType(t.Key) + ", " + g.cppType(t.Value) + ">{}"
 	case *ast.PtrType, *ast.StarExpr:
 		return "nullptr"
+	case *ast.SelectorExpr:
+		if g.isIfaceName(t.Sel) {
+			return "nullptr"
+		}
+		return "{}"
 	case *ast.InterfaceType:
 		return "{}"
 	}
@@ -452,7 +561,35 @@ func (g *Generator) emitDecls(decls []ast.Decl) {
 		}
 	}
 	g.writeln("")
-	// 0. Interfaces first: abstract classes that structs later derive from.
+	// 0a. Type aliases (`using X = Y;`) before constants and variables.
+	for _, d := range decls {
+		if gd, ok := d.(*ast.GenDecl); ok && gd.Tok == "type" {
+			for _, s := range gd.Specs {
+				ts, ok := s.(*ast.TypeSpec)
+				if !ok {
+					continue
+				}
+				switch ts.Type.(type) {
+				case *ast.StructType, *ast.InterfaceType:
+				default:
+					g.emitTypeSpec(ts)
+				}
+			}
+		}
+	}
+	// 0. Free-function prototypes, so class methods can call them.
+	for _, d := range decls {
+		if fd, ok := d.(*ast.FuncDecl); ok && fd.Recv == nil && fd.Name != "main" {
+			g.emitFuncProto(fd)
+		}
+	}
+	// 1. Package-level constants and variables.
+	for _, d := range decls {
+		if gd, ok := d.(*ast.GenDecl); ok && gd.Tok != "type" {
+			g.emitGenDecl(gd, true)
+		}
+	}
+	// 2. Interfaces: abstract classes that structs later derive from.
 	for _, d := range decls {
 		if gd, ok := d.(*ast.GenDecl); ok && gd.Tok == "type" {
 			for _, s := range gd.Specs {
@@ -464,31 +601,27 @@ func (g *Generator) emitDecls(decls []ast.Decl) {
 			}
 		}
 	}
-	// 1. The remaining type declarations.
+	// 3. The remaining type declarations.
 	for _, d := range decls {
 		if gd, ok := d.(*ast.GenDecl); ok && gd.Tok == "type" {
 			for _, s := range gd.Specs {
-				if ts, ok := s.(*ast.TypeSpec); ok {
-					if _, isIface := ts.Type.(*ast.InterfaceType); isIface {
-						continue
-					}
+				ts, ok := s.(*ast.TypeSpec)
+				if !ok {
+					continue
+				}
+				if _, isStruct := ts.Type.(*ast.StructType); isStruct {
 					g.emitTypeSpec(ts)
 				}
 			}
 		}
 	}
-	// 2. Forward declarations for free functions.
+	// 4. Function bodies (types, consts, vars already emitted).
 	for _, d := range decls {
-		if fd, ok := d.(*ast.FuncDecl); ok && fd.Recv == nil && fd.Name != "main" {
-			g.emitFuncProto(fd)
+		if fd, ok := d.(*ast.FuncDecl); ok {
+			if fd.Recv == nil {
+				g.emitFunc(fd)
+			}
 		}
-	}
-	// 3. Bodies, variables and constants (types already emitted).
-	for _, d := range decls {
-		if gd, ok := d.(*ast.GenDecl); ok && gd.Tok == "type" {
-			continue
-		}
-		g.emitDecl(d)
 	}
 }
 
@@ -518,7 +651,11 @@ func (g *Generator) funcSignature(fd *ast.FuncDecl) string {
 			params = recvType + " " + recvName
 		}
 	}
-	return fmt.Sprintf("auto %s(%s) -> %s", name, params, ret)
+	sig := fmt.Sprintf("auto %s(%s) -> %s", name, params, ret)
+	if hasVariadic(fd.Type.Params) {
+		sig = "template <typename... _A>\n" + sig
+	}
+	return sig
 }
 
 func (g *Generator) resultType(results []*ast.Field) string {
@@ -552,11 +689,18 @@ func (g *Generator) resultTypes(results []*ast.Field) []string {
 func (g *Generator) emitParams(fields []*ast.Field) string {
 	var parts []string
 	for _, fld := range fields {
-		typ := g.cppType(fld.Type)
 		if _, ok := fld.Type.(*ast.Ellipsis); ok {
-			// variadic — approximate with an initializer list is not possible
-			// here; emit the element type and a name.
+			// Go variadic -> C++ parameter pack
+			if len(fld.Names) == 0 {
+				parts = append(parts, "_A...")
+				continue
+			}
+			for _, n := range fld.Names {
+				parts = append(parts, "_A... "+n)
+			}
+			continue
 		}
+		typ := g.cppType(fld.Type)
 		if len(fld.Names) == 0 {
 			parts = append(parts, typ)
 			continue
@@ -564,6 +708,27 @@ func (g *Generator) emitParams(fields []*ast.Field) string {
 		for _, n := range fld.Names {
 			parts = append(parts, typ+" "+n)
 		}
+	}
+	return strings.Join(parts, ", ")
+}
+
+// hasVariadic reports whether a parameter list ends in a variadic parameter.
+func hasVariadic(fields []*ast.Field) bool {
+	if len(fields) == 0 {
+		return false
+	}
+	_, ok := fields[len(fields)-1].Type.(*ast.Ellipsis)
+	return ok
+}
+
+// emitCallArgs renders call arguments, expanding a trailing `x...` spread.
+func (g *Generator) emitCallArgs(c *ast.CallExpr) string {
+	var parts []string
+	for _, a := range c.Args {
+		parts = append(parts, g.emitExpr(a))
+	}
+	if c.Ellipsis && len(parts) > 0 {
+		parts[len(parts)-1] += "..."
 	}
 	return strings.Join(parts, ", ")
 }
@@ -606,7 +771,11 @@ func (g *Generator) emitFunc(fd *ast.FuncDecl) {
 func (g *Generator) methodSignature(fd *ast.FuncDecl) string {
 	params := g.emitParams(fd.Type.Params)
 	ret := g.resultType(fd.Type.Results)
-	return fmt.Sprintf("auto %s(%s) -> %s", fd.Name, params, ret)
+	sig := fmt.Sprintf("auto %s(%s) -> %s", fd.Name, params, ret)
+	if hasVariadic(fd.Type.Params) {
+		sig = "template <typename... _A>\n" + sig
+	}
+	return sig
 }
 
 // emitMethod emits a method as a member function of its receiver type. Inside
@@ -673,11 +842,84 @@ func (g *Generator) emitFieldsCtor(typeName string) {
 	g.writeln("%s(%s) { %s }", typeName, strings.Join(params, ", "), strings.Join(body, " "))
 }
 
+// calleeNameOf returns the bare name of a called function or method.
+func calleeNameOf(e ast.Expr) string {
+	switch t := e.(type) {
+	case *ast.Ident:
+		return t.Name
+	case *ast.SelectorExpr:
+		return t.Sel
+	}
+	return ""
+}
+
+// callsPtrFunc reports whether an expression calls a pointer-returning func.
+func (g *Generator) callsPtrFunc(e ast.Expr) bool {
+	c, ok := e.(*ast.CallExpr)
+	if !ok {
+		return false
+	}
+	return g.ptrFuncs[calleeNameOf(c.Fun)]
+}
+
+// typeNameOf returns the bare name of a named type expression.
+func typeNameOf(t ast.Expr) string {
+	switch tt := t.(type) {
+	case *ast.Ident:
+		return tt.Name
+	case *ast.SelectorExpr:
+		return tt.Sel
+	case *ast.StarExpr:
+		return typeNameOf(tt.X)
+	case *ast.PtrType:
+		return typeNameOf(tt.Elem)
+	}
+	return ""
+}
+
+// emitTypedComposite emits an untyped composite literal with a known element
+// type (designated init for a struct, `new` for a pointer element).
+func (g *Generator) emitTypedComposite(t ast.Expr, elts []ast.Expr) string {
+	ptr := false
+	base := t
+	if st, ok := t.(*ast.StarExpr); ok {
+		ptr = true
+		base = st.X
+	} else if pt, ok := t.(*ast.PtrType); ok {
+		ptr = true
+		base = pt.Elem
+	}
+	baseName := typeNameOf(base)
+	if baseName == "" || !g.structNames[baseName] {
+		lit := &ast.CompositeLit{Type: t, Elts: elts}
+		return g.emitExpr(lit)
+	}
+	var parts []string
+	for _, e := range elts {
+		if kv, ok := e.(*ast.KeyValueExpr); ok {
+			if id, ok := kv.Key.(*ast.Ident); ok {
+				parts = append(parts, "."+g.memberName(baseName, id.Name)+" = "+g.emitExpr(kv.Value))
+				continue
+			}
+		}
+		parts = append(parts, g.emitExpr(e))
+	}
+	expr := fmt.Sprintf("%s{ %s }", g.cppType(base), strings.Join(parts, ", "))
+	if ptr {
+		return "new " + expr
+	}
+	return expr
+}
+
 // emitCtorCall builds a constructor call for a composite literal of a
 // non-aggregate struct type, in field-declaration order.
 func (g *Generator) emitCtorCall(typeName string, elts []ast.Expr) string {
-	names := g.structFields[typeName]
-	ftypes := g.structFieldTypes[typeName]
+	bare := typeName
+	if i := strings.LastIndex(bare, "::"); i >= 0 {
+		bare = bare[i+2:]
+	}
+	names := g.structFields[bare]
+	ftypes := g.structFieldTypes[bare]
 	provided := map[string]string{}
 	var positional []string
 	for _, e := range elts {
@@ -690,7 +932,16 @@ func (g *Generator) emitCtorCall(typeName string, elts []ast.Expr) string {
 		positional = append(positional, g.emitExpr(e))
 	}
 	var args []string
+	last := -1
 	for i, n := range names {
+		if _, ok := provided[n]; ok {
+			last = i
+		} else if i < len(positional) {
+			last = i
+		}
+	}
+	for i := 0; i <= last; i++ {
+		n := names[i]
 		if v, ok := provided[n]; ok {
 			args = append(args, v)
 			continue
@@ -1023,7 +1274,7 @@ func (g *Generator) emitDefine(a *ast.AssignStmt) {
 		} else {
 			g.writeln("auto %s = %s;", id.Name, rhs)
 		}
-		if isPointerExpr(a.Rhs[i]) {
+		if isPointerExpr(a.Rhs[i]) || g.callsPtrFunc(a.Rhs[i]) {
 			g.ptrVars[id.Name] = true
 		}
 		g.recordTypeExpr(id.Name, a.Rhs[i])
@@ -1035,24 +1286,94 @@ func (g *Generator) emitReturn(r *ast.ReturnStmt) {
 		g.writeln("return;")
 		return
 	}
+	flat := g.flattenResults(g.curResults)
 	if len(r.Results) == 1 {
-		g.writeln("return %s;", g.emitExpr(r.Results[0]))
+		g.writeln("return %s;", g.returnValue(r.Results[0], flat, 0))
 		return
 	}
 	var vals []string
-	for _, e := range r.Results {
-		vals = append(vals, g.emitExpr(e))
+	for i, e := range r.Results {
+		vals = append(vals, g.returnValue(e, flat, i))
 	}
 	types := g.resultTypes(g.curResults)
-	g.writeln("return std::tuple<%s>{%s};", strings.Join(types, ", "), strings.Join(vals, ", "))
+	g.writeln("return std::tuple<%s>(%s);", strings.Join(types, ", "), strings.Join(vals, ", "))
+}
+
+// returnValue renders a returned expression, mapping a bare `nil` to the zero
+// value of the corresponding result type (a slice is `{}`, not `nullptr`).
+func (g *Generator) returnValue(e ast.Expr, flat []ast.Expr, i int) string {
+	if id, ok := e.(*ast.Ident); ok && id.Name == "nil" && i < len(flat) {
+		return g.zeroValue(flat[i])
+	}
+	return g.emitExpr(e)
+}
+
+// flattenResults expands grouped named results into one type per value.
+func (g *Generator) flattenResults(results []*ast.Field) []ast.Expr {
+	var out []ast.Expr
+	for _, fld := range results {
+		if len(fld.Names) == 0 {
+			out = append(out, fld.Type)
+			continue
+		}
+		for range fld.Names {
+			out = append(out, fld.Type)
+		}
+	}
+	return out
+}
+
+// identName returns an identifier's name, or "".
+func identName(e ast.Expr) string {
+	if id, ok := e.(*ast.Ident); ok {
+		return id.Name
+	}
+	return ""
+}
+
+// emitInitStmt emits an if/for initialiser as ordinary statements. This
+// handles the comma-ok form `v, ok := x.(T)`.
+func (g *Generator) emitInitStmt(s ast.Stmt) {
+	as, ok := s.(*ast.AssignStmt)
+	if !ok {
+		g.emitStmt(s)
+		return
+	}
+	if as.Op == ":=" && len(as.Lhs) == 2 && len(as.Rhs) == 1 {
+		if ta, ok := as.Rhs[0].(*ast.TypeAssertExpr); ok && ta.Type != nil {
+			vName := identName(as.Lhs[0])
+			okName := identName(as.Lhs[1])
+			if g.namedIface(ta.X) {
+				ct := g.cppType(ta.Type)
+				g.writeln("auto %s = dynamic_cast<%s>(%s);", vName, ct, g.emitExpr(ta.X))
+				if strings.HasSuffix(ct, "*") {
+					g.ptrVars[vName] = true
+				}
+				if okName != "" && okName != "_" {
+					if strings.HasSuffix(ct, "*") {
+						g.writeln("bool %s = (%s != nullptr);", okName, vName)
+					} else {
+						g.writeln("bool %s = true;", okName)
+					}
+				}
+				return
+			}
+			g.needAny = true
+			g.writeln("auto %s = (%s).as<%s>();", vName, g.emitExpr(ta.X), g.cppType(ta.Type))
+			if okName != "" && okName != "_" {
+				g.writeln("bool %s = true;", okName)
+			}
+			return
+		}
+	}
+	g.emitAssign(as)
 }
 
 func (g *Generator) emitIf(st *ast.IfStmt) {
-	head := ""
 	if st.Init != nil {
-		head = g.inlineStmt(st.Init) + "; "
+		g.emitInitStmt(st.Init)
 	}
-	g.writeln("if (%s%s)", head, g.emitExpr(st.Cond))
+	g.writeln("if (%s)", g.emitExpr(st.Cond))
 	g.emitBlock(st.Body)
 	if st.Else != nil {
 		if elseif, ok := st.Else.(*ast.IfStmt); ok {
@@ -1067,11 +1388,10 @@ func (g *Generator) emitIf(st *ast.IfStmt) {
 }
 
 func (g *Generator) emitIfInline(st *ast.IfStmt) {
-	head := ""
 	if st.Init != nil {
-		head = g.inlineStmt(st.Init) + "; "
+		g.emitInitStmt(st.Init)
 	}
-	g.writeln("if (%s%s)", head, g.emitExpr(st.Cond))
+	g.writeln("if (%s)", g.emitExpr(st.Cond))
 	g.emitBlock(st.Body)
 	if st.Else != nil {
 		if elseif, ok := st.Else.(*ast.IfStmt); ok {
@@ -1123,6 +1443,9 @@ func (g *Generator) emitFor(st *ast.ForStmt) {
 	init := ""
 	if st.Init != nil {
 		init = g.inlineStmt(st.Init)
+		if init == "" {
+			g.emitInitStmt(st.Init)
+		}
 	}
 	cond := ""
 	if st.Cond != nil {
@@ -1522,6 +1845,7 @@ func (g *Generator) emitIfaceTypeSwitch(st *ast.TypeSwitchStmt, varName string, 
 		if varName != "" && varName != "_" && len(c.List) == 1 {
 			if id, ok := c.List[0].(*ast.Ident); !ok || id.Name != "nil" {
 				g.writeln("auto %s = dynamic_cast<%s>(_tsw);", varName, g.cppType(c.List[0]))
+				g.ptrVars[varName] = true
 			}
 		}
 		g.emitStmts(c.Body)
@@ -1561,6 +1885,9 @@ func (g *Generator) deferBody(call ast.Expr) string {
 func (g *Generator) emitExpr(e ast.Expr) string {
 	switch t := e.(type) {
 	case *ast.Ident:
+		if t.Name == "nil" {
+			return "nullptr"
+		}
 		if g.recvName != "" && t.Name == g.recvName {
 			if g.recvPtr {
 				return "this"
@@ -1596,8 +1923,18 @@ func (g *Generator) emitExpr(e ast.Expr) string {
 		return "(*" + g.emitExpr(t.X) + ")"
 	case *ast.SelectorExpr:
 		if id, ok := t.X.(*ast.Ident); ok {
+			if g.pkgNames[id.Name] {
+				return id.Name + "::" + t.Sel
+			}
 			base, sep := g.selBase(id)
 			return base + sep + t.Sel
+		}
+		if c, ok := t.X.(*ast.CallExpr); ok {
+			sep := "."
+			if g.ptrFuncs[calleeNameOf(c.Fun)] {
+				sep = "->"
+			}
+			return g.emitExpr(c) + sep + t.Sel
 		}
 		return g.emitExpr(t.X) + "." + t.Sel
 	case *ast.IndexExpr:
@@ -1683,13 +2020,14 @@ func (g *Generator) emitCall(c *ast.CallExpr) string {
 			g.usesBuiltinOut = true
 			return g.emitPrint(c.Args, "std::cerr", id.Name == "println")
 		case "string":
-			return fmt.Sprintf("std::string(%s)", g.emitExpr(c.Args[0]))
+			g.needGoString = true
+			return fmt.Sprintf("go2cpp::_goString(%s)", g.emitExpr(c.Args[0]))
 		case "int", "int8", "int16", "int32", "int64", "uint", "uint8", "uint16", "uint32", "uint64", "byte", "rune", "float32", "float64", "bool",
 			"make", "append", "new", "cap", "copy":
 			return g.emitBuiltinConv(id.Name, c)
 		}
 		if g.isTypeName(id.Name) {
-			return fmt.Sprintf("%s(%s)", g.cppType(id), g.emitArgs(c.Args))
+			return fmt.Sprintf("%s(%s)", g.cppType(id), g.emitCallArgs(c))
 		}
 	}
 	// selectors: fmt.*, strings.*, strconv.*
@@ -1702,18 +2040,25 @@ func (g *Generator) emitCall(c *ast.CallExpr) string {
 				return g.emitStrings(sel.Sel, c)
 			case "strconv":
 				return g.emitStrconv(sel.Sel, c)
+			case "unicode":
+				return g.emitUnicode(sel.Sel, c)
+			case "utf8":
+				return g.emitUtf8(sel.Sel, c)
 			}
 		}
 	}
 	// selector calls: methods and function values
 	if sel, ok := c.Fun.(*ast.SelectorExpr); ok {
 		if id, ok := sel.X.(*ast.Ident); ok {
+			if g.pkgNames[id.Name] {
+				return id.Name + "::" + sel.Sel + "(" + g.emitCallArgs(c) + ")"
+			}
 			base, sep := g.selBase(id)
-			return base + sep + sel.Sel + "(" + g.emitArgs(c.Args) + ")"
+			return base + sep + sel.Sel + "(" + g.emitCallArgs(c) + ")"
 		}
-		return g.emitExpr(sel.X) + "." + sel.Sel + "(" + g.emitArgs(c.Args) + ")"
+		return g.emitExpr(sel.X) + "." + sel.Sel + "(" + g.emitCallArgs(c) + ")"
 	}
-	return fmt.Sprintf("%s(%s)", g.emitExpr(c.Fun), g.emitArgs(c.Args))
+	return fmt.Sprintf("%s(%s)", g.emitExpr(c.Fun), g.emitCallArgs(c))
 }
 
 func (g *Generator) emitArgs(args []ast.Expr) string {
@@ -1794,11 +2139,11 @@ func (g *Generator) emitFmt(sel string, c *ast.CallExpr) string {
 		return g.emitPrintfCall(c.Args)
 	case "Sprintf":
 		g.needFmtSprintf = true
-		var parts []string
-		for _, a := range c.Args {
-			parts = append(parts, g.emitExpr(a))
-		}
-		return fmt.Sprintf("fmtSprintf(%s)", strings.Join(parts, ", "))
+		return fmt.Sprintf("fmtSprintf(%s)", g.emitCallArgs(c))
+	case "Errorf":
+		g.needFmtSprintf = true
+		g.needError = true
+		return fmt.Sprintf("go2cpp::newError(fmtSprintf(%s))", g.emitCallArgs(c))
 	case "Fprintln", "Fprint":
 		g.usesPrint = true
 		return g.emitPrint(c.Args[1:], g.emitExpr(c.Args[0]), sel == "Fprintln")
@@ -1854,7 +2199,7 @@ func (g *Generator) cstr(s string) string {
 }
 
 func (g *Generator) emitStrings(sel string, c *ast.CallExpr) string {
-	args := g.emitArgs(c.Args)
+	args := g.emitCallArgs(c)
 	switch sel {
 	case "Contains":
 		g.needContains = true
@@ -1868,6 +2213,15 @@ func (g *Generator) emitStrings(sel string, c *ast.CallExpr) string {
 	case "TrimSpace":
 		g.needTrimSpace = true
 		return "stringsTrimSpace(" + args + ")"
+	case "TrimSuffix":
+		g.needTrimSpace = true
+		return "stringsTrimSuffix(" + args + ")"
+	case "TrimPrefix":
+		g.needTrimSpace = true
+		return "stringsTrimPrefix(" + args + ")"
+	case "ReplaceAll":
+		g.needReplace = true
+		return "stringsReplace(" + args + ", -1)"
 	case "Split":
 		g.needSplit = true
 		return "stringsSplit(" + args + ")"
@@ -1888,15 +2242,39 @@ func (g *Generator) emitStrings(sel string, c *ast.CallExpr) string {
 	return "/*?*/"
 }
 
+func (g *Generator) emitUnicode(sel string, c *ast.CallExpr) string {
+	g.needUnicode = true
+	switch sel {
+	case "IsLetter":
+		return "go2cpp::unicodeIsLetter(" + g.emitCallArgs(c) + ")"
+	case "IsDigit":
+		return "go2cpp::unicodeIsDigit(" + g.emitCallArgs(c) + ")"
+	case "IsSpace":
+		return "go2cpp::unicodeIsSpace(" + g.emitCallArgs(c) + ")"
+	}
+	g.fail("unsupported unicode.%s", sel)
+	return "/*?*/"
+}
+
+func (g *Generator) emitUtf8(sel string, c *ast.CallExpr) string {
+	g.needUtf8 = true
+	switch sel {
+	case "DecodeRuneInString":
+		return "go2cpp::utf8DecodeRuneInString(" + g.emitCallArgs(c) + ")"
+	}
+	g.fail("unsupported utf8.%s", sel)
+	return "/*?*/"
+}
+
 func (g *Generator) emitStrconv(sel string, c *ast.CallExpr) string {
 	g.needStrconv = true
 	switch sel {
 	case "ParseFloat":
-		return "strconvParseFloat(" + g.emitArgs(c.Args) + ")"
+		return "strconvParseFloat(" + g.emitCallArgs(c) + ")"
 	case "ParseInt":
-		return "strconvParseInt(" + g.emitArgs(c.Args) + ")"
+		return "strconvParseInt(" + g.emitCallArgs(c) + ")"
 	case "Itoa":
-		return "std::to_string(" + g.emitArgs(c.Args) + ")"
+		return "std::to_string(" + g.emitCallArgs(c) + ")"
 	}
 	g.fail("unsupported strconv.%s", sel)
 	return "/*?*/"
@@ -1934,12 +2312,20 @@ func (g *Generator) emitComposite(c *ast.CompositeLit) string {
 	case *ast.SliceType:
 		var elts []string
 		for _, e := range c.Elts {
+			if inner, ok := e.(*ast.CompositeLit); ok && inner.Type == nil {
+				elts = append(elts, g.emitTypedComposite(t.Elem, inner.Elts))
+				continue
+			}
 			elts = append(elts, g.emitExpr(e))
 		}
 		return fmt.Sprintf("std::vector<%s>{ %s }", g.cppType(t.Elem), strings.Join(elts, ", "))
 	case *ast.ArrayType:
 		var elts []string
 		for _, e := range c.Elts {
+			if inner, ok := e.(*ast.CompositeLit); ok && inner.Type == nil {
+				elts = append(elts, g.emitTypedComposite(t.Elem, inner.Elts))
+				continue
+			}
 			elts = append(elts, g.emitExpr(e))
 		}
 		return fmt.Sprintf("std::vector<%s>{ %s }", g.cppType(t.Elem), strings.Join(elts, ", "))
@@ -1968,7 +2354,23 @@ func (g *Generator) emitComposite(c *ast.CompositeLit) string {
 		}
 		return "{ " + strings.Join(elts, ", ") + " }"
 	}
-	// e.g. pkg.Type{...}
+	// pkg.Type{...} and other qualified types: designated init.
+	if sel, ok := c.Type.(*ast.SelectorExpr); ok {
+		var elts []string
+		if len(g.implementsOf(sel.Sel)) > 0 {
+			return g.emitCtorCall(g.cppType(sel), c.Elts)
+		}
+		for _, e := range c.Elts {
+			if kv, ok := e.(*ast.KeyValueExpr); ok {
+				if name, ok := kv.Key.(*ast.Ident); ok && !g.structNames[name.Name] {
+					elts = append(elts, "."+g.memberName(sel.Sel, name.Name)+" = "+g.emitExpr(kv.Value))
+					continue
+				}
+			}
+			elts = append(elts, g.emitExpr(e))
+		}
+		return fmt.Sprintf("%s{ %s }", g.cppType(sel), strings.Join(elts, ", "))
+	}
 	var elts []string
 	for _, e := range c.Elts {
 		elts = append(elts, g.emitExpr(e))
@@ -1992,11 +2394,14 @@ func (g *Generator) preamble() string {
 	b.WriteString("#include <type_traits>\n")
 	b.WriteString("#include <experimental/type_traits>\n")
 	b.WriteString("#include <cstdint>\n")
-	if g.needPrintf || g.needFmtSprintf {
+	if g.needPrintf {
 		b.WriteString("#include <cstdio>\n")
 	}
 	b.WriteString("#include <functional>\n")
 	b.WriteString("#include <algorithm>\n")
+	// Disable C macros that clash with Go identifiers.
+	b.WriteString("#ifdef EOF\n#undef EOF\n#endif\n")
+	b.WriteString("#ifdef NULL\n#undef NULL\n#endif\n")
 	if g.needAny {
 		b.WriteString("#include <typeindex>\n")
 		b.WriteString("#include <typeinfo>\n")
@@ -2048,6 +2453,18 @@ func (g *Generator) preamble() string {
 	}
 	if g.needStrconv {
 		b.WriteString(helperStrconv)
+	}
+	if g.needError {
+		b.WriteString(helperError)
+	}
+	if g.needUnicode {
+		b.WriteString(helperUnicode)
+	}
+	if g.needUtf8 {
+		b.WriteString(helperUtf8)
+	}
+	if g.needGoString {
+		b.WriteString(helperGoString)
 	}
 	b.WriteString(helperSlice)
 	b.WriteString("\n")
@@ -2125,6 +2542,15 @@ inline std::string stringsTrimSpace(const std::string& s) {
     size_t b = s.find_last_not_of(ws);
     return s.substr(a, b - a + 1);
 }
+inline std::string stringsTrimSuffix(const std::string& s, const std::string& suf) {
+    if (s.size() >= suf.size() && s.compare(s.size() - suf.size(), suf.size(), suf) == 0)
+        return s.substr(0, s.size() - suf.size());
+    return s;
+}
+inline std::string stringsTrimPrefix(const std::string& s, const std::string& pre) {
+    if (s.rfind(pre, 0) == 0) return s.substr(pre.size());
+    return s;
+}
 `
 
 const helperSplit = `
@@ -2185,11 +2611,16 @@ template <typename T> std::string _to_str(T v) { return std::to_string(v); }
 
 inline void _replace_first_spec(std::string& s, const std::string& val) {
     size_t best = std::string::npos;
-    for (const char* spec : { "%v", "%d", "%s", "%f" }) {
+    std::string which;
+    for (const char* spec : { "%v", "%d", "%s", "%f", "%q" }) {
         size_t q = s.find(spec);
-        if (q != std::string::npos && (best == std::string::npos || q < best)) best = q;
+        if (q != std::string::npos && (best == std::string::npos || q < best)) { best = q; which = spec; }
     }
-    if (best != std::string::npos) s.replace(best, 2, val);
+    if (best != std::string::npos) {
+        std::string rep = val;
+        if (which == "%q") rep = "\"" + val + "\"";
+        s.replace(best, 2, rep);
+    }
 }
 
 template <typename... Args>
@@ -2207,6 +2638,79 @@ inline std::tuple<double, bool> strconvParseFloat(const std::string& s, int) {
 }
 inline std::tuple<long, bool> strconvParseInt(const std::string& s, int, int) {
     try { return { std::stol(s, nullptr, 0), true }; } catch (...) { return { 0, false }; }
+}
+`
+
+const helperError = `
+namespace go2cpp {
+struct error {
+    virtual ~error() {}
+    virtual std::string Error() const = 0;
+};
+struct _errString : error {
+    std::string msg;
+    _errString(const std::string& m) : msg(m) {}
+    std::string Error() const override { return msg; }
+};
+inline error* newError(const std::string& m) { return new _errString(m); }
+}
+`
+
+const helperGoString = `
+namespace go2cpp {
+inline std::string _goString(const std::string& s) { return s; }
+inline std::string _goString(const char* s) { return std::string(s); }
+inline std::string _goString(std::int32_t r) {
+    std::string out;
+    unsigned int c = static_cast<unsigned int>(r);
+    if (c < 0x80) {
+        out += static_cast<char>(c);
+    } else if (c < 0x800) {
+        out += static_cast<char>(0xC0 | (c >> 6));
+        out += static_cast<char>(0x80 | (c & 0x3F));
+    } else if (c < 0x10000) {
+        out += static_cast<char>(0xE0 | (c >> 12));
+        out += static_cast<char>(0x80 | ((c >> 6) & 0x3F));
+        out += static_cast<char>(0x80 | (c & 0x3F));
+    } else {
+        out += static_cast<char>(0xF0 | (c >> 18));
+        out += static_cast<char>(0x80 | ((c >> 12) & 0x3F));
+        out += static_cast<char>(0x80 | ((c >> 6) & 0x3F));
+        out += static_cast<char>(0x80 | (c & 0x3F));
+    }
+    return out;
+}
+}
+`
+
+const helperUnicode = `
+namespace go2cpp {
+inline bool unicodeIsLetter(std::int32_t r) {
+    return (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || r == '_' || r > 127;
+}
+inline bool unicodeIsDigit(std::int32_t r) { return r >= '0' && r <= '9'; }
+inline bool unicodeIsSpace(std::int32_t r) {
+    return r == ' ' || r == '\t' || r == '\n' || r == '\v' || r == '\f' || r == '\r';
+}
+}
+`
+
+const helperUtf8 = `
+namespace go2cpp {
+inline std::tuple<std::int32_t, int> utf8DecodeRuneInString(const std::string& s) {
+    if (s.empty()) return std::tuple<std::int32_t, int>{ 0, 0 };
+    unsigned char c = static_cast<unsigned char>(s[0]);
+    int n = 1;
+    std::int32_t r = c;
+    if (c >= 0xF0) { n = 4; r = c & 0x07; }
+    else if (c >= 0xE0) { n = 3; r = c & 0x0F; }
+    else if (c >= 0xC0) { n = 2; r = c & 0x1F; }
+    if (n > static_cast<int>(s.size())) return std::tuple<std::int32_t, int>{ 0xFFFD, 1 };
+    for (int i = 1; i < n; i++) {
+        r = static_cast<std::int32_t>((r << 6) | (static_cast<unsigned char>(s[i]) & 0x3F));
+    }
+    return std::tuple<std::int32_t, int>{ r, n };
+}
 }
 `
 
@@ -2246,6 +2750,8 @@ public:
         return h->v;
     }
     std::type_index type() const { return p_ ? p_->type() : std::type_index(typeid(void)); }
+    bool operator==(std::nullptr_t) const { return !has_value(); }
+    bool operator!=(std::nullptr_t) const { return has_value(); }
     friend std::ostream& operator<<(std::ostream& o, const any& a) { if (a.p_) a.p_->print(o); return o; }
 };
 
@@ -2334,7 +2840,16 @@ const helperSlice = `
 template <typename T>
 std::vector<T> _slice(const std::vector<T>& v, std::size_t lo, std::size_t hi) {
     if (hi < lo) hi = lo;
+    if (lo > v.size()) lo = v.size();
+    if (hi > v.size()) hi = v.size();
     return std::vector<T>(v.begin() + lo, v.begin() + hi);
+}
+
+inline std::string _slice(const std::string& s, std::size_t lo, std::size_t hi) {
+    if (hi < lo) hi = lo;
+    if (lo > s.size()) lo = s.size();
+    if (hi > s.size()) hi = s.size();
+    return s.substr(lo, hi - lo);
 }
 
 template <typename T, typename... Rest>
