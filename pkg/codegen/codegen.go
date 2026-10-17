@@ -28,6 +28,12 @@ func (b *strBuilder) String() string {
 	return b.s
 }
 
+// Package is one Go package's declarations, for whole-program generation.
+type Package struct {
+	Name  string
+	Decls []ast.Decl
+}
+
 // Generator accumulates generated C++ source.
 type Generator struct {
 	sb     strBuilder
@@ -116,12 +122,6 @@ func Generate(f *ast.File) (string, error) {
 		return "", g.err
 	}
 	return g.preamble() + g.sb.String(), nil
-}
-
-// Package is one Go package's declarations, for whole-program generation.
-type Package struct {
-	Name  string
-	Decls []ast.Decl
 }
 
 // GenerateProgram lowers several packages into a single translation unit, one
@@ -469,6 +469,9 @@ func (g *Generator) emitCommaOK(lhs0, lhs1, rhs ast.Expr) bool {
 		expr = fmt.Sprintf("(%s).as<%s>()", g.emitExpr(ta.X), ct)
 	}
 	g.writeln("auto %s = %s;", vName, expr)
+	if ta.Type != nil {
+		g.types[vName] = ta.Type
+	}
 	if okName != "" && okName != "_" {
 		if strings.HasSuffix(ct, "*") {
 			g.writeln("bool %s = (%s != nullptr);", okName, vName)
@@ -933,6 +936,9 @@ func (g *Generator) emitFunc(fd *ast.FuncDecl) {
 	saved := g.ptrVars
 	g.ptrVars = map[string]bool{}
 	defer func() { g.ptrVars = saved }()
+	savedTypes := g.types
+	g.types = map[string]ast.Expr{}
+	defer func() { g.types = savedTypes }()
 	g.recordParams(fd.Type.Params)
 	if fd.Name == "main" {
 		g.emitStmts(fd.Body.List)
@@ -976,6 +982,9 @@ func (g *Generator) emitMethod(fd *ast.FuncDecl) {
 	saved := g.ptrVars
 	g.ptrVars = map[string]bool{}
 	defer func() { g.ptrVars = saved }()
+	savedTypes := g.types
+	g.types = map[string]ast.Expr{}
+	defer func() { g.types = savedTypes }()
 	g.recordParams(fd.Type.Params)
 	g.emitStmts(fd.Body.List)
 	g.recvName, g.recvPtr = savedRecv, savedPtr
@@ -2163,9 +2172,34 @@ func (g *Generator) emitExpr(e ast.Expr) string {
 func (g *Generator) emitLit(l *ast.BasicLit) string {
 	if strings.HasPrefix(l.Value, "`") {
 		inner := strings.TrimSuffix(strings.TrimPrefix(l.Value, "`"), "`")
-		return `R"(` + inner + `)"`
+		return cppQuote(inner)
 	}
 	return l.Value
+}
+
+// cppQuote renders a string as a C++ string literal with escapes, so that any
+// content (including `R"(`) is safe.
+func cppQuote(s string) string {
+	var b strings.Builder
+	b.WriteByte('"')
+	for i := 0; i < len(s); i++ {
+		switch s[i] {
+		case '\\':
+			b.WriteString("\\\\")
+		case '"':
+			b.WriteString("\\\"")
+		case '\n':
+			b.WriteString("\\n")
+		case '\t':
+			b.WriteString("\\t")
+		case '\r':
+			b.WriteString("\\r")
+		default:
+			b.WriteByte(s[i])
+		}
+	}
+	b.WriteByte('"')
+	return b.String()
 }
 
 func (g *Generator) emitSlice(s *ast.SliceExpr) string {
