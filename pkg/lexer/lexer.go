@@ -245,16 +245,16 @@ func isDigit(r rune) bool {
 }
 
 func (l *Lexer) scanIdent(line, col int) Token {
-	var sb strings.Builder
+	text := ""
 	for {
 		r := l.peek()
 		if isLetter(r) || isDigit(r) {
-			sb.WriteRune(l.advance())
+			text += string(l.advance())
 			continue
 		}
 		break
 	}
-	word := sb.String()
+	word := text
 	if Keywords[word] {
 		return Token{Type: KEYWORD, Literal: word, Line: line, Col: col}
 	}
@@ -262,41 +262,41 @@ func (l *Lexer) scanIdent(line, col int) Token {
 }
 
 func (l *Lexer) scanNumber(line, col int) (Token, error) {
-	var sb strings.Builder
+	text := ""
 	isFloat := false
 	// Radix prefixes.
 	if l.peek() == '0' {
 		nxt := l.peekAt(1)
 		if nxt == 'x' || nxt == 'X' || nxt == 'b' || nxt == 'B' || nxt == 'o' || nxt == 'O' {
-			sb.WriteRune(l.advance())
-			sb.WriteRune(l.advance())
+			text += string(l.advance())
+			text += string(l.advance())
 			for isHexDigit(l.peek()) || l.peek() == '_' {
-				sb.WriteRune(l.advance())
+				text += string(l.advance())
 			}
-			return l.finishNumber(line, col, sb.String(), false)
+			return l.finishNumber(line, col, text, false)
 		}
 	}
 	for unicode.IsDigit(l.peek()) || l.peek() == '_' {
-		sb.WriteRune(l.advance())
+		text += string(l.advance())
 	}
 	if l.peek() == '.' {
 		isFloat = true
-		sb.WriteRune(l.advance())
+		text += string(l.advance())
 		for unicode.IsDigit(l.peek()) || l.peek() == '_' {
-			sb.WriteRune(l.advance())
+			text += string(l.advance())
 		}
 	}
 	if l.peek() == 'e' || l.peek() == 'E' {
 		isFloat = true
-		sb.WriteRune(l.advance())
+		text += string(l.advance())
 		if l.peek() == '+' || l.peek() == '-' {
-			sb.WriteRune(l.advance())
+			text += string(l.advance())
 		}
 		for unicode.IsDigit(l.peek()) {
-			sb.WriteRune(l.advance())
+			text += string(l.advance())
 		}
 	}
-	return l.finishNumber(line, col, sb.String(), isFloat)
+	return l.finishNumber(line, col, text, isFloat)
 }
 
 func (l *Lexer) finishNumber(line, col int, text string, isFloat bool) (Token, error) {
@@ -316,61 +316,61 @@ func isHexDigit(r rune) bool {
 }
 
 func (l *Lexer) scanString(line, col int) (Token, error) {
-	var sb strings.Builder
-	sb.WriteRune(l.advance()) // opening quote
+	text := ""
+	text += string(l.advance()) // opening quote
 	for {
 		r := l.peek()
 		if r == 0 || r == '\n' {
 			return Token{}, fmt.Errorf("lexer: %d:%d: unterminated string literal", line, col)
 		}
 		if r == '\\' {
-			sb.WriteRune(l.advance())
-			sb.WriteRune(l.advance())
+			text += string(l.advance())
+			text += string(l.advance())
 			continue
 		}
-		sb.WriteRune(l.advance())
+		text += string(l.advance())
 		if r == '"' {
 			break
 		}
 	}
-	return Token{Type: STRING, Literal: sb.String(), Line: line, Col: col}, nil
+	return Token{Type: STRING, Literal: text, Line: line, Col: col}, nil
 }
 
 func (l *Lexer) scanRawString(line, col int) (Token, error) {
-	var sb strings.Builder
-	sb.WriteRune(l.advance()) // opening backtick
+	text := ""
+	text += string(l.advance()) // opening backtick
 	for {
 		r := l.peek()
 		if r == 0 {
 			return Token{}, fmt.Errorf("lexer: %d:%d: unterminated raw string literal", line, col)
 		}
-		sb.WriteRune(l.advance())
+		text += string(l.advance())
 		if r == '`' {
 			break
 		}
 	}
-	return Token{Type: STRING, Literal: sb.String(), Line: line, Col: col}, nil
+	return Token{Type: STRING, Literal: text, Line: line, Col: col}, nil
 }
 
 func (l *Lexer) scanChar(line, col int) (Token, error) {
-	var sb strings.Builder
-	sb.WriteRune(l.advance()) // opening quote
+	text := ""
+	text += string(l.advance()) // opening quote
 	for {
 		r := l.peek()
 		if r == 0 || r == '\n' {
 			return Token{}, fmt.Errorf("lexer: %d:%d: unterminated rune literal", line, col)
 		}
 		if r == '\\' {
-			sb.WriteRune(l.advance())
-			sb.WriteRune(l.advance())
+			text += string(l.advance())
+			text += string(l.advance())
 			continue
 		}
-		sb.WriteRune(l.advance())
+		text += string(l.advance())
 		if r == '\'' {
 			break
 		}
 	}
-	return Token{Type: CHAR, Literal: sb.String(), Line: line, Col: col}, nil
+	return Token{Type: CHAR, Literal: text, Line: line, Col: col}, nil
 }
 
 func (l *Lexer) scanOperator(line, col int) (Token, error) {
