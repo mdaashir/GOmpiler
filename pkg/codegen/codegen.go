@@ -2172,6 +2172,8 @@ func (g *Generator) emitExpr(e ast.Expr) string {
 func (g *Generator) emitLit(l *ast.BasicLit) string {
 	if strings.HasPrefix(l.Value, "`") {
 		inner := strings.TrimSuffix(strings.TrimPrefix(l.Value, "`"), "`")
+		// Go discards carriage returns inside raw string literals.
+		inner = strings.ReplaceAll(inner, "\r", "")
 		return cppQuote(inner)
 	}
 	return l.Value
