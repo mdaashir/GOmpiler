@@ -52,6 +52,9 @@ type Generator struct {
 	pkgNames map[string]bool
 	ptrFuncs map[string]bool
 
+	fieldTypes  map[string]ast.Expr
+	funcResults map[string]ast.Expr
+
 	needContains   bool
 	needHasPrefix  bool
 	needHasSuffix  bool
@@ -72,6 +75,7 @@ type Generator struct {
 	needGoString   bool
 
 	switchCounter int
+	tmpCounter    int
 	selectCounter int
 	deferCounter  int
 	iotaIndex     int
@@ -102,6 +106,8 @@ func Generate(f *ast.File) (string, error) {
 		ifaceEmbeds:      map[string][]string{},
 		pkgNames:         map[string]bool{},
 		ptrFuncs:         map[string]bool{},
+		fieldTypes:       map[string]ast.Expr{},
+		funcResults:      map[string]ast.Expr{},
 	}
 	g.collectDecls(f.Decls)
 	g.buildInterfaces()
@@ -135,6 +141,8 @@ func GenerateProgram(pkgs []*Package) (string, error) {
 		ifaceEmbeds:      map[string][]string{},
 		pkgNames:         map[string]bool{},
 		ptrFuncs:         map[string]bool{},
+		fieldTypes:       map[string]ast.Expr{},
+		funcResults:      map[string]ast.Expr{},
 	}
 	for _, p := range pkgs {
 		if p.Name != "main" {
@@ -183,6 +191,9 @@ func (g *Generator) collectDecls(decls []ast.Decl) {
 			if len(fd.Type.Results) == 1 && g.isPtrType(fd.Type.Results[0].Type) {
 				g.ptrFuncs[fd.Name] = true
 			}
+			if len(fd.Type.Results) == 1 {
+				g.funcResults[fd.Name] = fd.Type.Results[0].Type
+			}
 			if fd.Recv != nil && len(fd.Recv.List) > 0 {
 				name, _ := baseTypeName(fd.Recv.List[0].Type)
 				g.methods[name] = append(g.methods[name], fd)
@@ -209,6 +220,7 @@ func (g *Generator) collectDecls(decls []ast.Decl) {
 					for _, n := range fld.Names {
 						fields = append(fields, n)
 						ftypes = append(ftypes, fld.Type)
+						g.fieldTypes[ts.Name+"."+n] = fld.Type
 					}
 				}
 				g.structFields[ts.Name] = fields
@@ -379,6 +391,164 @@ func (g *Generator) isIfaceName(name string) bool {
 	return false
 }
 
+// exprType is a best-effort static type of an expression.
+func (g *Generator) exprType(e ast.Expr) ast.Expr {
+	switch t := e.(type) {
+	case *ast.Ident:
+		return g.types[t.Name]
+	case *ast.ParenExpr:
+		return g.exprType(t.X)
+	case *ast.SelectorExpr:
+		if id, ok := t.X.(*ast.Ident); ok && g.pkgNames[id.Name] {
+			return nil
+		}
+		if ft, ok := g.fieldTypes[typeNameOf(g.exprType(t.X))+"."+t.Sel]; ok {
+			return ft
+		}
+		return nil
+	case *ast.IndexExpr:
+		switch b := g.exprType(t.X).(type) {
+		case *ast.SliceType:
+			return b.Elem
+		case *ast.ArrayType:
+			return b.Elem
+		case *ast.MapType:
+			return b.Value
+		}
+		return nil
+	case *ast.StarExpr:
+		return g.exprType(t.X)
+	case *ast.UnaryExpr:
+		if t.Op == "*" {
+			return g.exprType(t.X)
+		}
+		if t.Op == "&" {
+			return &ast.PtrType{Elem: g.exprType(t.X)}
+		}
+		return nil
+	case *ast.CallExpr:
+		return g.funcResults[calleeNameOf(t.Fun)]
+	}
+	return nil
+}
+
+// isIfaceExpr reports whether an expression's static type is a named interface.
+func (g *Generator) isIfaceExpr(e ast.Expr) bool {
+	if g.namedIface(e) {
+		return true
+	}
+	switch t := g.exprType(e).(type) {
+	case *ast.Ident:
+		return g.isIfaceName(t.Name)
+	case *ast.SelectorExpr:
+		return g.isIfaceName(t.Sel)
+	}
+	return false
+}
+
+// emitCommaOK emits `v, ok := x.(T)` as a checked dynamic cast.
+func (g *Generator) emitCommaOK(lhs0, lhs1, rhs ast.Expr) bool {
+	ta, ok := rhs.(*ast.TypeAssertExpr)
+	if !ok || ta.Type == nil {
+		return false
+	}
+	vName := identName(lhs0)
+	if vName == "" || vName == "_" {
+		vName = "_tv"
+	}
+	okName := identName(lhs1)
+	ct := g.cppType(ta.Type)
+	var expr string
+	if strings.HasSuffix(ct, "*") {
+		expr = fmt.Sprintf("dynamic_cast<%s>(%s)", ct, g.emitExpr(ta.X))
+		g.ptrVars[vName] = true
+	} else if g.isIfaceExpr(ta.X) {
+		expr = fmt.Sprintf("(*dynamic_cast<%s*>(%s))", ct, g.emitExpr(ta.X))
+	} else {
+		g.needAny = true
+		expr = fmt.Sprintf("(%s).as<%s>()", g.emitExpr(ta.X), ct)
+	}
+	g.writeln("auto %s = %s;", vName, expr)
+	if okName != "" && okName != "_" {
+		if strings.HasSuffix(ct, "*") {
+			g.writeln("bool %s = (%s != nullptr);", okName, vName)
+		} else {
+			g.writeln("bool %s = true;", okName)
+		}
+	}
+	return true
+}
+
+// emitMapCommaOK emits `v, ok := m[k]` using find().
+func (g *Generator) emitMapCommaOK(lhs0, lhs1, rhs ast.Expr) bool {
+	ix, ok := rhs.(*ast.IndexExpr)
+	if !ok {
+		return false
+	}
+	mt, ok := g.exprType(ix.X).(*ast.MapType)
+	if !ok {
+		return false
+	}
+	g.tmpCounter++
+	tmp := fmt.Sprintf("_mfind%d", g.tmpCounter)
+	vName := identName(lhs0)
+	if vName == "" || vName == "_" {
+		vName = "_mv"
+	}
+	okName := identName(lhs1)
+	m := g.emitExpr(ix.X)
+	g.writeln("auto %s = (%s).find(%s);", tmp, m, g.emitExpr(ix.Index))
+	g.writeln("%s %s = (%s != (%s).end()) ? %s->second : %s;", g.cppType(mt.Value), vName, tmp, m, tmp, g.zeroValue(mt.Value))
+	if okName != "" && okName != "_" {
+		g.writeln("bool %s = (%s != (%s).end());", okName, tmp, m)
+	}
+	return true
+}
+
+// recordElem records the element type of a range-over-slice variable.
+func (g *Generator) recordElem(name string, x ast.Expr) {
+	switch t := g.exprType(x).(type) {
+	case *ast.SliceType:
+		g.types[name] = t.Elem
+		if g.isPtrType(t.Elem) {
+			g.ptrVars[name] = true
+		}
+	case *ast.ArrayType:
+		g.types[name] = t.Elem
+		if g.isPtrType(t.Elem) {
+			g.ptrVars[name] = true
+		}
+	case *ast.MapType:
+		g.types[name] = t.Value
+		if g.isPtrType(t.Value) {
+			g.ptrVars[name] = true
+		}
+	}
+}
+
+// subGenerator returns a Generator sharing all collected state, for emitting
+// nested function bodies (closures, deferred calls).
+func (g *Generator) subGenerator() *Generator {
+	return &Generator{
+		structNames:      g.structNames,
+		structFields:     g.structFields,
+		structFieldTypes: g.structFieldTypes,
+		aliases:          g.aliases,
+		types:            g.types,
+		methods:          g.methods,
+		embedOf:          g.embedOf,
+		ptrVars:          map[string]bool{},
+		ifaces:           g.ifaces,
+		ifaceOrder:       g.ifaceOrder,
+		ifaceOwn:         g.ifaceOwn,
+		ifaceEmbeds:      g.ifaceEmbeds,
+		pkgNames:         g.pkgNames,
+		ptrFuncs:         g.ptrFuncs,
+		fieldTypes:       g.fieldTypes,
+		funcResults:      g.funcResults,
+	}
+}
+
 // baseTypeName returns the bare type name and whether it is a pointer type.
 func baseTypeName(t ast.Expr) (string, bool) {
 	switch tt := t.(type) {
@@ -474,6 +644,12 @@ func (g *Generator) cppType(e ast.Expr) string {
 	case *ast.InterfaceType:
 		g.needAny = true
 		return "go2cpp::any"
+	case *ast.UnaryExpr:
+		if t.Op == "*" {
+			// `*T` in type position (e.g. a type-switch case)
+			return g.cppType(t.X) + "*"
+		}
+		return "auto"
 	case *ast.SelectorExpr:
 		if id, ok := t.X.(*ast.Ident); ok && g.pkgNames[id.Name] {
 			base := id.Name + "::" + t.Sel
@@ -752,9 +928,12 @@ func (g *Generator) emitFunc(fd *ast.FuncDecl) {
 	g.writeln("{")
 	g.indent++
 	g.curResults = fd.Type.Results
-	g.recordParams(fd.Type.Params)
 	savedRecv, savedPtr := g.recvName, g.recvPtr
 	g.recvName, g.recvPtr = "", false
+	saved := g.ptrVars
+	g.ptrVars = map[string]bool{}
+	defer func() { g.ptrVars = saved }()
+	g.recordParams(fd.Type.Params)
 	if fd.Name == "main" {
 		g.emitStmts(fd.Body.List)
 		g.writeln("return 0;")
@@ -794,6 +973,9 @@ func (g *Generator) emitMethod(fd *ast.FuncDecl) {
 		g.recvName = rf.Names[0]
 		g.types[g.recvName] = rf.Type
 	}
+	saved := g.ptrVars
+	g.ptrVars = map[string]bool{}
+	defer func() { g.ptrVars = saved }()
 	g.recordParams(fd.Type.Params)
 	g.emitStmts(fd.Body.List)
 	g.recvName, g.recvPtr = savedRecv, savedPtr
@@ -893,6 +1075,14 @@ func (g *Generator) emitTypedComposite(t ast.Expr, elts []ast.Expr) string {
 	if baseName == "" || !g.structNames[baseName] {
 		lit := &ast.CompositeLit{Type: t, Elts: elts}
 		return g.emitExpr(lit)
+	}
+	if len(g.implementsOf(baseName)) > 0 {
+		// polymorphic: use the generated constructor
+		call := g.emitCtorCall(g.cppType(base), elts)
+		if ptr {
+			return "new " + call
+		}
+		return call
 	}
 	var parts []string
 	for _, e := range elts {
@@ -1209,6 +1399,17 @@ func (g *Generator) emitAssign(a *ast.AssignStmt) {
 		return
 	}
 	if a.Op == "=" {
+		if len(a.Lhs) == 1 && len(a.Rhs) == 1 {
+			if id, ok := a.Rhs[0].(*ast.Ident); ok && id.Name == "nil" {
+				if lt := g.exprType(a.Lhs[0]); lt != nil {
+					switch lt.(type) {
+					case *ast.SliceType, *ast.MapType:
+						g.writeln("%s = %s;", g.emitExpr(a.Lhs[0]), g.zeroValue(lt))
+						return
+					}
+				}
+			}
+		}
 		var lhs, rhs []string
 		for _, e := range a.Lhs {
 			lhs = append(lhs, g.emitExpr(e))
@@ -1230,6 +1431,12 @@ func (g *Generator) emitAssign(a *ast.AssignStmt) {
 func (g *Generator) emitDefine(a *ast.AssignStmt) {
 	// multiple lhs bound from a single (tuple-returning) rhs
 	if len(a.Lhs) > 1 && len(a.Rhs) == 1 {
+		if g.emitCommaOK(a.Lhs[0], a.Lhs[1], a.Rhs[0]) {
+			return
+		}
+		if g.emitMapCommaOK(a.Lhs[0], a.Lhs[1], a.Rhs[0]) {
+			return
+		}
 		blank := false
 		for _, e := range a.Lhs {
 			if id, ok := e.(*ast.Ident); ok && id.Name == "_" {
@@ -1340,29 +1547,7 @@ func (g *Generator) emitInitStmt(s ast.Stmt) {
 		return
 	}
 	if as.Op == ":=" && len(as.Lhs) == 2 && len(as.Rhs) == 1 {
-		if ta, ok := as.Rhs[0].(*ast.TypeAssertExpr); ok && ta.Type != nil {
-			vName := identName(as.Lhs[0])
-			okName := identName(as.Lhs[1])
-			if g.namedIface(ta.X) {
-				ct := g.cppType(ta.Type)
-				g.writeln("auto %s = dynamic_cast<%s>(%s);", vName, ct, g.emitExpr(ta.X))
-				if strings.HasSuffix(ct, "*") {
-					g.ptrVars[vName] = true
-				}
-				if okName != "" && okName != "_" {
-					if strings.HasSuffix(ct, "*") {
-						g.writeln("bool %s = (%s != nullptr);", okName, vName)
-					} else {
-						g.writeln("bool %s = true;", okName)
-					}
-				}
-				return
-			}
-			g.needAny = true
-			g.writeln("auto %s = (%s).as<%s>();", vName, g.emitExpr(ta.X), g.cppType(ta.Type))
-			if okName != "" && okName != "_" {
-				g.writeln("bool %s = true;", okName)
-			}
+		if g.emitCommaOK(as.Lhs[0], as.Lhs[1], as.Rhs[0]) {
 			return
 		}
 	}
@@ -1370,7 +1555,10 @@ func (g *Generator) emitInitStmt(s ast.Stmt) {
 }
 
 func (g *Generator) emitIf(st *ast.IfStmt) {
-	if st.Init != nil {
+	wrap := st.Init != nil
+	if wrap {
+		g.writeln("{")
+		g.indent++
 		g.emitInitStmt(st.Init)
 	}
 	g.writeln("if (%s)", g.emitExpr(st.Cond))
@@ -1384,6 +1572,10 @@ func (g *Generator) emitIf(st *ast.IfStmt) {
 			g.writeln("else")
 			g.emitBlock(blk)
 		}
+	}
+	if wrap {
+		g.indent--
+		g.writeln("}")
 	}
 }
 
@@ -1499,6 +1691,7 @@ func (g *Generator) emitRange(st *ast.RangeStmt) {
 			g.writeln("auto %s = _i;", st.Key.(*ast.Ident).Name)
 		}
 		g.writeln("auto %s = %s[_i];", st.Value.(*ast.Ident).Name, g.emitExpr(st.X))
+		g.recordElem(st.Value.(*ast.Ident).Name, st.X)
 		g.emitStmts(st.Body.List)
 		g.indent--
 		g.writeln("}")
@@ -1750,12 +1943,16 @@ func (g *Generator) emitTypeSwitch(st *ast.TypeSwitchStmt) {
 				varName = id.Name
 			}
 		}
+	} else if es, ok := st.Assign.(*ast.ExprStmt); ok {
+		if ta, ok := es.X.(*ast.TypeAssertExpr); ok {
+			X = ta.X
+		}
 	}
 	if X == nil {
 		g.fail("unsupported type switch")
 		return
 	}
-	if g.namedIface(X) {
+	if g.isIfaceExpr(X) {
 		g.emitIfaceTypeSwitch(st, varName, X)
 		return
 	}
@@ -1865,15 +2062,7 @@ func (g *Generator) emitDefer(d *ast.DeferStmt) {
 
 func (g *Generator) deferBody(call ast.Expr) string {
 	if fl, ok := call.(*ast.FuncLit); ok {
-		var b strBuilder
-		sub := &Generator{
-			sb:           b,
-			structNames:  g.structNames,
-			structFields: g.structFields,
-			aliases:      g.aliases,
-			types:        g.types,
-			indent:       0,
-		}
+		sub := g.subGenerator()
 		sub.emitStmts(fl.Body.List)
 		return strings.TrimSpace(sub.sb.String())
 	}
@@ -1936,7 +2125,11 @@ func (g *Generator) emitExpr(e ast.Expr) string {
 			}
 			return g.emitExpr(c) + sep + t.Sel
 		}
-		return g.emitExpr(t.X) + "." + t.Sel
+		sep := "."
+		if g.isPtrType(g.exprType(t.X)) {
+			sep = "->"
+		}
+		return g.emitExpr(t.X) + sep + t.Sel
 	case *ast.IndexExpr:
 		return fmt.Sprintf("%s[%s]", g.emitExpr(t.X), g.emitExpr(t.Index))
 	case *ast.SliceExpr:
@@ -1953,15 +2146,15 @@ func (g *Generator) emitExpr(e ast.Expr) string {
 		if t.Type == nil {
 			return g.emitExpr(t.X)
 		}
-		if g.namedIface(t.X) {
-			ct := g.cppType(t.Type)
-			if strings.HasSuffix(ct, "*") {
-				return fmt.Sprintf("dynamic_cast<%s>(%s)", ct, g.emitExpr(t.X))
-			}
+		ct := g.cppType(t.Type)
+		if strings.HasSuffix(ct, "*") {
+			return fmt.Sprintf("dynamic_cast<%s>(%s)", ct, g.emitExpr(t.X))
+		}
+		if g.isIfaceExpr(t.X) {
 			return fmt.Sprintf("(*dynamic_cast<%s*>(%s))", ct, g.emitExpr(t.X))
 		}
 		g.needAny = true
-		return fmt.Sprintf("(%s).as<%s>()", g.emitExpr(t.X), g.cppType(t.Type))
+		return fmt.Sprintf("(%s).as<%s>()", g.emitExpr(t.X), ct)
 	}
 	g.fail("unsupported expression %T", e)
 	return "/*?*/"
@@ -2105,8 +2298,10 @@ func (g *Generator) emitBuiltinConv(name string, c *ast.CallExpr) string {
 		}
 		return "{}"
 	case "append":
-		// approximately: append(vec, x) -> helper
 		g.needLen()
+		if c.Ellipsis && len(c.Args) == 2 {
+			return fmt.Sprintf("_appendAll(%s, %s)", g.emitExpr(c.Args[0]), g.emitExpr(c.Args[1]))
+		}
 		var parts []string
 		for _, a := range c.Args {
 			parts = append(parts, g.emitExpr(a))
@@ -2219,6 +2414,30 @@ func (g *Generator) emitStrings(sel string, c *ast.CallExpr) string {
 	case "TrimPrefix":
 		g.needTrimSpace = true
 		return "stringsTrimPrefix(" + args + ")"
+	case "Trim":
+		g.needTrimSpace = true
+		return "stringsTrim(" + args + ")"
+	case "TrimLeft":
+		g.needTrimSpace = true
+		return "stringsTrimLeft(" + args + ")"
+	case "TrimRight":
+		g.needTrimSpace = true
+		return "stringsTrimRight(" + args + ")"
+	case "Fields":
+		g.needSplit = true
+		return "stringsFields(" + args + ")"
+	case "Repeat":
+		g.needSplit = true
+		return "stringsRepeat(" + args + ")"
+	case "ToLower":
+		g.needSplit = true
+		return "stringsToLower(" + args + ")"
+	case "ToUpper":
+		g.needSplit = true
+		return "stringsToUpper(" + args + ")"
+	case "Count":
+		g.needIndex = true
+		return "stringsCount(" + args + ")"
 	case "ReplaceAll":
 		g.needReplace = true
 		return "stringsReplace(" + args + ", -1)"
@@ -2234,6 +2453,9 @@ func (g *Generator) emitStrings(sel string, c *ast.CallExpr) string {
 	case "Index":
 		g.needIndex = true
 		return "stringsIndex(" + args + ")"
+	case "LastIndex":
+		g.needIndex = true
+		return "stringsLastIndex(" + args + ")"
 	case "Replace":
 		g.needReplace = true
 		return "stringsReplace(" + args + ")"
@@ -2287,14 +2509,9 @@ func (g *Generator) emitFuncLit(fl *ast.FuncLit) string {
 	b.WriteString(") -> ")
 	b.WriteString(g.resultType(fl.Type.Results))
 	b.WriteString(" {\n")
-	sub := &Generator{
-		structNames:  g.structNames,
-		structFields: g.structFields,
-		aliases:      g.aliases,
-		types:        g.types,
-		indent:       1,
-		curResults:   fl.Type.Results,
-	}
+	sub := g.subGenerator()
+	sub.indent = 1
+	sub.curResults = fl.Type.Results
 	sub.emitStmts(fl.Body.List)
 	b.WriteString(sub.sb.String())
 	b.WriteString("}")
@@ -2551,6 +2768,22 @@ inline std::string stringsTrimPrefix(const std::string& s, const std::string& pr
     if (s.rfind(pre, 0) == 0) return s.substr(pre.size());
     return s;
 }
+inline std::string stringsTrim(const std::string& s, const std::string& cut) {
+    size_t a = s.find_first_not_of(cut);
+    if (a == std::string::npos) return "";
+    size_t b = s.find_last_not_of(cut);
+    return s.substr(a, b - a + 1);
+}
+inline std::string stringsTrimLeft(const std::string& s, const std::string& cut) {
+    size_t a = s.find_first_not_of(cut);
+    if (a == std::string::npos) return "";
+    return s.substr(a);
+}
+inline std::string stringsTrimRight(const std::string& s, const std::string& cut) {
+    size_t b = s.find_last_not_of(cut);
+    if (b == std::string::npos) return "";
+    return s.substr(0, b + 1);
+}
 `
 
 const helperSplit = `
@@ -2591,6 +2824,41 @@ inline int stringsIndex(const std::string& h, const std::string& n) {
     auto p = h.find(n);
     return p == std::string::npos ? -1 : static_cast<int>(p);
 }
+inline int stringsLastIndex(const std::string& h, const std::string& n) {
+    auto p = h.rfind(n);
+    return p == std::string::npos ? -1 : static_cast<int>(p);
+}
+inline int stringsCount(const std::string& s, const std::string& sub) {
+    if (sub.empty()) return static_cast<int>(s.size()) + 1;
+    int c = 0; size_t p = 0;
+    while ((p = s.find(sub, p)) != std::string::npos) { c++; p += sub.size(); }
+    return c;
+}
+inline std::vector<std::string> stringsFields(const std::string& s) {
+    std::vector<std::string> out; std::string cur;
+    for (char ch : s) {
+        if (ch == ' ' || ch == '\t' || ch == '\n' || ch == '\v' || ch == '\f' || ch == '\r') {
+            if (!cur.empty()) { out.push_back(cur); cur.clear(); }
+        } else { cur += ch; }
+    }
+    if (!cur.empty()) out.push_back(cur);
+    return out;
+}
+inline std::string stringsRepeat(const std::string& s, int n) {
+    std::string out;
+    for (int i = 0; i < n; i++) out += s;
+    return out;
+}
+inline std::string stringsToLower(const std::string& s) {
+    std::string out = s;
+    for (auto& c : out) if (c >= 'A' && c <= 'Z') c = static_cast<char>(c - 'A' + 'a');
+    return out;
+}
+inline std::string stringsToUpper(const std::string& s) {
+    std::string out = s;
+    for (auto& c : out) if (c >= 'a' && c <= 'z') c = static_cast<char>(c - 'a' + 'A');
+    return out;
+}
 `
 
 const helperReplace = `
@@ -2607,7 +2875,11 @@ inline std::string stringsReplace(const std::string& s, const std::string& oldS,
 const helperFmtSprintf = `
 inline std::string _to_str(const std::string& s) { return s; }
 inline std::string _to_str(const char* s) { return std::string(s); }
-template <typename T> std::string _to_str(T v) { return std::to_string(v); }
+template <typename T> std::string _to_str(T v) {
+    std::ostringstream _o;
+    _format_output(_o, v);
+    return _o.str();
+}
 
 inline void _replace_first_spec(std::string& s, const std::string& val) {
     size_t best = std::string::npos;
@@ -2855,6 +3127,12 @@ inline std::string _slice(const std::string& s, std::size_t lo, std::size_t hi) 
 template <typename T, typename... Rest>
 std::vector<T> _append(std::vector<T> v, Rest... rest) {
     (v.push_back(rest), ...);
+    return v;
+}
+
+template <typename T>
+std::vector<T> _appendAll(std::vector<T> v, const std::vector<T>& rest) {
+    v.insert(v.end(), rest.begin(), rest.end());
     return v;
 }
 `

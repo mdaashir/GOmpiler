@@ -679,18 +679,20 @@ func (p *Parser) parseFor() ast.Stmt {
 	p.inControlHeader = true
 	if p.rangeAhead() {
 		r := &ast.RangeStmt{Position: p.posOf(start)}
-		lhs := p.parseExprList()
-		if p.err != nil {
-			p.inControlHeader = false
-			return nil
+		if !p.at("range") {
+			lhs := p.parseExprList()
+			if p.err != nil {
+				p.inControlHeader = false
+				return nil
+			}
+			if len(lhs) == 1 {
+				r.Key = lhs[0]
+			} else {
+				r.Key = lhs[0]
+				r.Value = lhs[1]
+			}
+			r.Tok = p.next().Literal // := or =
 		}
-		if len(lhs) == 1 {
-			r.Key = lhs[0]
-		} else {
-			r.Key = lhs[0]
-			r.Value = lhs[1]
-		}
-		r.Tok = p.next().Literal // := or =
 		p.expect("range")
 		r.X = p.parseExpr()
 		p.inControlHeader = false
@@ -784,6 +786,14 @@ func (p *Parser) parseSwitch() ast.Stmt {
 	if as, ok := tagStmt.(*ast.AssignStmt); ok && len(as.Rhs) == 1 {
 		if ta, ok := as.Rhs[0].(*ast.TypeAssertExpr); ok && ta.Type == nil {
 			ts := &ast.TypeSwitchStmt{Position: p.posOf(start), Init: initStmt, Assign: as}
+			ts.Body = p.parseCaseClauses()
+			return ts
+		}
+	}
+	if es, ok := tagStmt.(*ast.ExprStmt); ok {
+		if ta, ok := es.X.(*ast.TypeAssertExpr); ok && ta.Type == nil {
+			// switch x.(type) — no bound variable
+			ts := &ast.TypeSwitchStmt{Position: p.posOf(start), Init: initStmt, Assign: es}
 			ts.Body = p.parseCaseClauses()
 			return ts
 		}
