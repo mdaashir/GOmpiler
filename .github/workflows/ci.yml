@@ -1,0 +1,49 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+
+      # Fail if go.mod/go.sum are not in tidy state.
+      - name: Verify go.mod/go.sum are tidy
+        run: |
+          go mod tidy
+          if ! git diff --exit-code -- go.mod go.sum; then
+            echo "::error::go.mod/go.sum are not tidy. Run 'go mod tidy' locally and commit the result."
+            exit 1
+          fi
+
+      - name: Build
+        run: go build ./...
+
+      - name: Vet
+        run: go vet ./...
+
+      # Unit tests; the pkg/compiler test compiles a program end to end and
+      # asserts the result is a valid ELF (it needs as/ld, present on the runner).
+      - name: Test
+        run: go test ./...
+
+      # Exercise the real CLI: compile an example and run the resulting binary.
+      - name: End-to-end (compile and run an example)
+        run: |
+          go build -o gompiler .
+          ./gompiler examples/hello.cpp -o hello
+          magic=$(od -An -tx1 -N4 hello | tr -d ' \n')
+          if [ "$magic" != "7f454c46" ]; then
+            echo "::error::output is not a Linux ELF file (magic: $magic)"
+            exit 1
+          fi
+          ./hello > out.txt
+          cat out.txt
+          grep -q 'Hello, World!' out.txt
