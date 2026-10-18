@@ -24,6 +24,10 @@ func (b *strBuilder) WriteString(x string) {
 	b.s += x
 }
 
+func (b *strBuilder) WriteByte(c byte) {
+	b.s += string(c)
+}
+
 func (b *strBuilder) String() string {
 	return b.s
 }
@@ -66,7 +70,10 @@ type Generator struct {
 
 	fieldTypes  map[string]ast.Expr
 	funcResults map[string]ast.Expr
-	declared    map[string]bool
+	declDepth   map[string]int
+	globals     map[string]ast.Expr
+	globalPass  bool
+	depth       int
 
 	needContains   bool
 	needHasPrefix  bool
@@ -115,7 +122,8 @@ func Generate(f *ast.File) (string, error) {
 		ptrFuncs:         map[string]bool{},
 		fieldTypes:       map[string]ast.Expr{},
 		funcResults:      map[string]ast.Expr{},
-		declared:         map[string]bool{},
+		declDepth:        map[string]int{},
+		globals:          map[string]ast.Expr{},
 	}
 	g.collectDecls(f.Decls)
 	g.buildInterfaces()
@@ -145,7 +153,8 @@ func GenerateProgram(pkgs []*Package) (string, error) {
 		ptrFuncs:         map[string]bool{},
 		fieldTypes:       map[string]ast.Expr{},
 		funcResults:      map[string]ast.Expr{},
-		declared:         map[string]bool{},
+		declDepth:        map[string]int{},
+		globals:          map[string]ast.Expr{},
 	}
 	for _, p := range pkgs {
 		if p.Name != "main" {
@@ -398,7 +407,10 @@ func (g *Generator) isIfaceName(name string) bool {
 func (g *Generator) exprType(e ast.Expr) ast.Expr {
 	switch t := e.(type) {
 	case *ast.Ident:
-		return g.types[t.Name]
+		if et, ok := g.types[t.Name]; ok {
+			return et
+		}
+		return g.globals[t.Name]
 	case *ast.ParenExpr:
 		return g.exprType(t.X)
 	case *ast.SelectorExpr:
@@ -431,6 +443,8 @@ func (g *Generator) exprType(e ast.Expr) ast.Expr {
 		return nil
 	case *ast.CallExpr:
 		return g.funcResults[calleeNameOf(t.Fun)]
+	case *ast.TypeAssertExpr:
+		return t.Type
 	}
 	return nil
 }
@@ -471,16 +485,16 @@ func (g *Generator) emitCommaOK(lhs0, lhs1, rhs ast.Expr) bool {
 		g.needAny = true
 		expr = fmt.Sprintf("(%s).as<%s>()", g.emitExpr(ta.X), ct)
 	}
-	g.writeln("auto %s = %s;", vName, expr)
+	g.declareOrAssign(vName, "", expr)
 	if ta.Type != nil {
 		g.types[vName] = ta.Type
 	}
 	if okName != "" && okName != "_" {
+		val := "true"
 		if strings.HasSuffix(ct, "*") {
-			g.writeln("bool %s = (%s != nullptr);", okName, vName)
-		} else {
-			g.writeln("bool %s = true;", okName)
+			val = fmt.Sprintf("(%s != nullptr)", vName)
 		}
+		g.declareOrAssign(okName, "bool", val)
 	}
 	return true
 }
@@ -504,13 +518,13 @@ func (g *Generator) emitMapCommaOK(lhs0, lhs1, rhs ast.Expr) bool {
 	okName := identName(lhs1)
 	m := g.emitExpr(ix.X)
 	g.writeln("auto %s = (%s).find(%s);", tmp, m, g.emitExpr(ix.Index))
-	g.writeln("%s %s = (%s != (%s).end()) ? %s->second : %s;", g.cppType(mt.Value), vName, tmp, m, tmp, g.zeroValue(mt.Value))
+	g.declareOrAssign(vName, g.cppType(mt.Value), fmt.Sprintf("(%s != (%s).end()) ? %s->second : %s", tmp, m, tmp, g.zeroValue(mt.Value)))
 	g.types[vName] = mt.Value
 	if g.isPtrType(mt.Value) {
 		g.ptrVars[vName] = true
 	}
 	if okName != "" && okName != "_" {
-		g.writeln("bool %s = (%s != (%s).end());", okName, tmp, m)
+		g.declareOrAssign(okName, "bool", fmt.Sprintf("(%s != (%s).end())", tmp, m))
 	}
 	return true
 }
@@ -539,15 +553,27 @@ func (g *Generator) recordElem(name string, x ast.Expr) {
 // subGenerator returns a Generator sharing all collected state, for emitting
 // nested function bodies (closures, deferred calls).
 func (g *Generator) subGenerator() *Generator {
+	pv := map[string]bool{}
+	for k, v := range g.ptrVars {
+		pv[k] = v
+	}
+	ty := map[string]ast.Expr{}
+	for k, v := range g.types {
+		ty[k] = v
+	}
+	dd := map[string]int{}
+	for k, v := range g.declDepth {
+		dd[k] = v
+	}
 	return &Generator{
 		structNames:      g.structNames,
 		structFields:     g.structFields,
 		structFieldTypes: g.structFieldTypes,
 		aliases:          g.aliases,
-		types:            g.types,
+		types:            ty,
 		methods:          g.methods,
 		embedOf:          g.embedOf,
-		ptrVars:          map[string]bool{},
+		ptrVars:          pv,
 		ifaces:           g.ifaces,
 		ifaceOrder:       g.ifaceOrder,
 		ifaceOwn:         g.ifaceOwn,
@@ -556,8 +582,49 @@ func (g *Generator) subGenerator() *Generator {
 		ptrFuncs:         g.ptrFuncs,
 		fieldTypes:       g.fieldTypes,
 		funcResults:      g.funcResults,
-		declared:         map[string]bool{},
+		declDepth:        dd,
+		globals:          g.globals,
+		recvName:         g.recvName,
+		recvPtr:          g.recvPtr,
+		depth:            g.depth,
 	}
+}
+
+// declareOrAssign emits a short variable declaration, mirroring Go's rule: a
+// name already declared in the *same* block is assigned, not redeclared; a name
+// from an enclosing block is shadowed by a fresh declaration.
+func (g *Generator) declareOrAssign(name, typ, value string) {
+	if name == "" || name == "_" {
+		return
+	}
+	if d, ok := g.declDepth[name]; ok && d == g.depth {
+		g.writeln("%s = %s;", name, value)
+		return
+	}
+	if typ == "" {
+		g.writeln("auto %s = %s;", name, value)
+	} else {
+		g.writeln("%s %s = %s;", typ, name, value)
+	}
+	g.declDepth[name] = g.depth
+}
+
+// dropScope forgets declarations made in the block that is ending.
+func (g *Generator) dropScope() {
+	for k, d := range g.declDepth {
+		if d == g.depth {
+			delete(g.declDepth, k)
+		}
+	}
+}
+
+// embeddedList returns a struct's embedded type names.
+func (g *Generator) embeddedList(typeName string) []string { return g.embedOf[typeName] }
+
+// isNilIdent reports whether an expression is the bare `nil`.
+func isNilIdent(e ast.Expr) bool {
+	id, ok := e.(*ast.Ident)
+	return ok && id.Name == "nil"
 }
 
 // baseTypeName returns the bare type name and whether it is a pointer type.
@@ -771,11 +838,13 @@ func (g *Generator) emitDecls(decls []ast.Decl) {
 		}
 	}
 	// 1. Package-level constants and variables.
+	g.globalPass = true
 	for _, d := range decls {
 		if gd, ok := d.(*ast.GenDecl); ok && gd.Tok != "type" {
 			g.emitGenDecl(gd, true)
 		}
 	}
+	g.globalPass = false
 	// 2. Interfaces: abstract classes that structs later derive from.
 	for _, d := range decls {
 		if gd, ok := d.(*ast.GenDecl); ok && gd.Tok == "type" {
@@ -947,9 +1016,10 @@ func (g *Generator) emitFunc(fd *ast.FuncDecl) {
 	savedTypes := g.types
 	g.types = map[string]ast.Expr{}
 	defer func() { g.types = savedTypes }()
-	savedDecl := g.declared
-	g.declared = map[string]bool{}
-	defer func() { g.declared = savedDecl }()
+	savedDecl := g.declDepth
+	g.declDepth = map[string]int{}
+	g.depth = 0
+	defer func() { g.declDepth = savedDecl }()
 	g.recordParams(fd.Type.Params)
 	if fd.Name == "main" {
 		g.emitStmts(fd.Body.List)
@@ -991,9 +1061,10 @@ func (g *Generator) emitMethod(fd *ast.FuncDecl) {
 	savedTypes := g.types
 	g.types = map[string]ast.Expr{}
 	defer func() { g.types = savedTypes }()
-	savedDecl := g.declared
-	g.declared = map[string]bool{}
-	defer func() { g.declared = savedDecl }()
+	savedDecl := g.declDepth
+	g.declDepth = map[string]int{}
+	g.depth = 0
+	defer func() { g.declDepth = savedDecl }()
 	if len(rf.Names) > 0 {
 		g.recvName = rf.Names[0]
 		g.types[g.recvName] = rf.Type
@@ -1348,15 +1419,25 @@ func (g *Generator) emitConstExpr(e ast.Expr) string {
 	return g.emitExpr(e)
 }
 
-func (g *Generator) recordType(name string, t ast.Expr) { g.types[name] = t }
+func (g *Generator) recordType(name string, t ast.Expr) {
+	g.types[name] = t
+	if g.globalPass {
+		g.globals[name] = t
+	}
+	g.declDepth[name] = g.depth
+}
 
 func (g *Generator) recordTypeExpr(name string, value ast.Expr) {
 	switch t := value.(type) {
 	case *ast.CompositeLit:
 		if t.Type != nil {
 			g.types[name] = t.Type
+			if g.globalPass {
+				g.globals[name] = t.Type
+			}
 		}
 	}
+	g.declDepth[name] = g.depth
 }
 
 // -------------------------------------------------------------- statements
@@ -1421,6 +1502,25 @@ func (g *Generator) emitAssign(a *ast.AssignStmt) {
 		return
 	}
 	if a.Op == "=" {
+		if len(a.Lhs) == 2 && len(a.Rhs) == 1 {
+			if g.emitCommaOK(a.Lhs[0], a.Lhs[1], a.Rhs[0]) {
+				return
+			}
+			if g.emitMapCommaOK(a.Lhs[0], a.Lhs[1], a.Rhs[0]) {
+				return
+			}
+		}
+		if len(a.Lhs) == len(a.Rhs) && len(a.Lhs) > 1 {
+			// Multiple assignment: emit pairwise statements.
+			for i := range a.Lhs {
+				if isBlank(a.Lhs[i]) {
+					g.writeln("(void)(%s);", g.emitExpr(a.Rhs[i]))
+					continue
+				}
+				g.writeln("%s = %s;", g.emitExpr(a.Lhs[i]), g.emitExpr(a.Rhs[i]))
+			}
+			return
+		}
 		if len(a.Lhs) == 1 && len(a.Rhs) == 1 {
 			if id, ok := a.Rhs[0].(*ast.Ident); ok && id.Name == "nil" {
 				if lt := g.exprType(a.Lhs[0]); lt != nil {
@@ -1465,25 +1565,21 @@ func (g *Generator) emitDefine(a *ast.AssignStmt) {
 				blank = true
 			}
 		}
-		if !blank {
-			var names []string
-			for _, e := range a.Lhs {
-				names = append(names, e.(*ast.Ident).Name)
-			}
-			g.writeln("auto [%s] = %s;", strings.Join(names, ", "), g.emitExpr(a.Rhs[0]))
-			return
-		}
-		// blanks present: destructure via a temporary
-		g.writeln("auto _tmp%d = %s;", g.deferCounter, g.emitExpr(a.Rhs[0]))
-		tmp := fmt.Sprintf("_tmp%d", g.deferCounter)
-		g.deferCounter++
+		g.tmpCounter++
+		tmp := fmt.Sprintf("_ret%d", g.tmpCounter)
+		g.writeln("auto %s = %s;", tmp, g.emitExpr(a.Rhs[0]))
 		for i, e := range a.Lhs {
-			id := e.(*ast.Ident)
-			if id.Name == "_" {
+			id, ok := e.(*ast.Ident)
+			if !ok {
 				continue
 			}
-			g.writeln("auto %s = std::get<%d>(%s);", id.Name, i, tmp)
+			if id.Name == "_" {
+				g.writeln("(void)std::get<%d>(%s);", i, tmp)
+				continue
+			}
+			g.declareOrAssign(id.Name, "", fmt.Sprintf("std::get<%d>(%s)", i, tmp))
 		}
+		_ = blank
 		return
 	}
 	// pairwise
@@ -1498,13 +1594,19 @@ func (g *Generator) emitDefine(a *ast.AssignStmt) {
 			continue
 		}
 		rhs := g.emitExpr(a.Rhs[i])
+		typ := ""
 		if isStringLit(a.Rhs[i]) {
-			g.writeln("std::string %s = %s;", id.Name, rhs)
-		} else {
-			g.writeln("auto %s = %s;", id.Name, rhs)
+			typ = "std::string"
 		}
+		g.declareOrAssign(id.Name, typ, rhs)
 		if isPointerExpr(a.Rhs[i]) || g.callsPtrFunc(a.Rhs[i]) {
 			g.ptrVars[id.Name] = true
+		}
+		if et := g.exprType(a.Rhs[i]); et != nil {
+			g.types[id.Name] = et
+			if g.isPtrType(et) {
+				g.ptrVars[id.Name] = true
+			}
 		}
 		if ta, ok := a.Rhs[i].(*ast.TypeAssertExpr); ok && ta.Type != nil {
 			g.types[id.Name] = ta.Type
@@ -1587,6 +1689,7 @@ func (g *Generator) emitIf(st *ast.IfStmt) {
 	if wrap {
 		g.writeln("{")
 		g.indent++
+		g.depth++
 		g.emitInitStmt(st.Init)
 	}
 	g.writeln("if (%s)", g.emitExpr(st.Cond))
@@ -1602,6 +1705,8 @@ func (g *Generator) emitIf(st *ast.IfStmt) {
 		}
 	}
 	if wrap {
+		g.dropScope()
+		g.depth--
 		g.indent--
 		g.writeln("}")
 	}
@@ -1612,6 +1717,7 @@ func (g *Generator) emitIfInline(st *ast.IfStmt) {
 	if wrap {
 		g.writeln("{")
 		g.indent++
+		g.depth++
 		g.emitInitStmt(st.Init)
 	}
 	g.writeln("if (%s)", g.emitExpr(st.Cond))
@@ -1626,6 +1732,8 @@ func (g *Generator) emitIfInline(st *ast.IfStmt) {
 		}
 	}
 	if wrap {
+		g.dropScope()
+		g.depth--
 		g.indent--
 		g.writeln("}")
 	}
@@ -1661,7 +1769,10 @@ func (g *Generator) inlineStmt(s ast.Stmt) string {
 func (g *Generator) emitBlock(b *ast.BlockStmt) {
 	g.writeln("{")
 	g.indent++
+	g.depth++
 	g.emitStmts(b.List)
+	g.dropScope()
+	g.depth--
 	g.indent--
 	g.writeln("}")
 }
@@ -1784,25 +1895,8 @@ func isPointerExpr(e ast.Expr) bool {
 }
 
 func (g *Generator) isMapExpr(e ast.Expr) bool {
-	id, ok := e.(*ast.Ident)
-	if !ok {
-		return false
-	}
-	t, ok := g.types[id.Name]
-	if !ok {
-		return false
-	}
-	_, isMap := t.(*ast.MapType)
-	if isMap {
-		return true
-	}
-	if alias, ok := t.(*ast.Ident); ok {
-		if target, ok := g.aliases[alias.Name]; ok {
-			_, isMap := target.(*ast.MapType)
-			return isMap
-		}
-	}
-	return false
+	_, ok := g.exprType(e).(*ast.MapType)
+	return ok
 }
 
 func (g *Generator) emitSwitch(st *ast.SwitchStmt) {
@@ -1815,6 +1909,7 @@ func (g *Generator) emitSwitch(st *ast.SwitchStmt) {
 	}
 	g.writeln("{")
 	g.indent++
+	g.depth++
 	if st.Init != nil {
 		g.writeln("%s;", g.inlineStmt(st.Init))
 	}
@@ -1839,6 +1934,7 @@ func (g *Generator) emitSwitch(st *ast.SwitchStmt) {
 		}
 		g.writeln("{")
 		g.indent++
+		g.depth++
 		for _, s := range c.Body {
 			if b, ok := s.(*ast.BranchStmt); ok && b.Tok == "fallthrough" {
 				next := g.nextCaseLabel(st, i)
@@ -1848,10 +1944,14 @@ func (g *Generator) emitSwitch(st *ast.SwitchStmt) {
 			g.emitStmt(s)
 		}
 		g.writeln("goto _sw%d_end;", n)
+		g.dropScope()
+		g.depth--
 		g.indent--
 		g.writeln("}")
 	}
 	g.writeln("_sw%d_end:;", n)
+	g.dropScope()
+	g.depth--
 	g.indent--
 	g.writeln("}")
 }
@@ -2022,6 +2122,7 @@ func (g *Generator) emitTypeSwitch(st *ast.TypeSwitchStmt) {
 			g.writeln("{")
 		}
 		g.indent++
+		g.depth++
 		if varName != "" && varName != "_" {
 			if len(c.List) == 1 {
 				if id, ok := c.List[0].(*ast.Ident); !ok || id.Name != "nil" {
@@ -2034,9 +2135,13 @@ func (g *Generator) emitTypeSwitch(st *ast.TypeSwitchStmt) {
 			}
 		}
 		g.emitStmts(c.Body)
+		g.dropScope()
+		g.depth--
 		g.indent--
 		g.writeln("}")
 	}
+	g.dropScope()
+	g.depth--
 	g.indent--
 	g.writeln("}")
 }
@@ -2074,6 +2179,7 @@ func (g *Generator) emitIfaceTypeSwitch(st *ast.TypeSwitchStmt, varName string, 
 			g.writeln("{")
 		}
 		g.indent++
+		g.depth++
 		if varName != "" && varName != "_" && len(c.List) == 1 {
 			if id, ok := c.List[0].(*ast.Ident); !ok || id.Name != "nil" {
 				g.writeln("auto %s = dynamic_cast<%s>(_tsw);", varName, g.cppType(c.List[0]))
@@ -2081,9 +2187,13 @@ func (g *Generator) emitIfaceTypeSwitch(st *ast.TypeSwitchStmt, varName string, 
 			}
 		}
 		g.emitStmts(c.Body)
+		g.dropScope()
+		g.depth--
 		g.indent--
 		g.writeln("}")
 	}
+	g.dropScope()
+	g.depth--
 	g.indent--
 	g.writeln("}")
 }
@@ -2127,6 +2237,22 @@ func (g *Generator) emitExpr(e ast.Expr) string {
 		op := t.Op
 		if op == "&^" {
 			return fmt.Sprintf("(%s & ~%s)", g.emitExpr(t.X), g.emitExpr(t.Y))
+		}
+		if op == "==" || op == "!=" {
+			lNil, rNil := isNilIdent(t.X), isNilIdent(t.Y)
+			if lNil != rNil {
+				other := t.Y
+				if rNil {
+					other = t.X
+				}
+				switch g.exprType(other).(type) {
+				case *ast.SliceType, *ast.ArrayType, *ast.MapType:
+					if op == "!=" {
+						return fmt.Sprintf("(!(%s).empty())", g.emitExpr(other))
+					}
+					return fmt.Sprintf("((%s).empty())", g.emitExpr(other))
+				}
+			}
 		}
 		return fmt.Sprintf("(%s %s %s)", g.emitExpr(t.X), op, g.emitExpr(t.Y))
 	case *ast.UnaryExpr:
@@ -2208,7 +2334,7 @@ func (g *Generator) emitLit(l *ast.BasicLit) string {
 // cppQuote renders a string as a C++ string literal with escapes, so that any
 // content (including `R"(`) is safe.
 func cppQuote(s string) string {
-	var b strings.Builder
+	var b strBuilder
 	b.WriteByte('"')
 	for i := 0; i < len(s); i++ {
 		switch s[i] {
@@ -2277,6 +2403,11 @@ func (g *Generator) emitCall(c *ast.CallExpr) string {
 		case "string":
 			g.needGoString = true
 			return fmt.Sprintf("go2cpp::_goString(%s)", g.emitExpr(c.Args[0]))
+		case "delete":
+			if len(c.Args) == 2 {
+				return fmt.Sprintf("(%s).erase(%s)", g.emitExpr(c.Args[0]), g.emitExpr(c.Args[1]))
+			}
+			return "/*delete*/"
 		case "int", "int8", "int16", "int32", "int64", "uint", "uint8", "uint16", "uint32", "uint64", "byte", "rune", "float32", "float64", "bool",
 			"make", "append", "new", "cap", "copy":
 			return g.emitBuiltinConv(id.Name, c)
@@ -2310,6 +2441,13 @@ func (g *Generator) emitCall(c *ast.CallExpr) string {
 			}
 			base, sep := g.selBase(id)
 			return base + sep + sel.Sel + "(" + g.emitCallArgs(c) + ")"
+		}
+		if inner, ok := sel.X.(*ast.CallExpr); ok {
+			sep := "."
+			if g.ptrFuncs[calleeNameOf(inner.Fun)] {
+				sep = "->"
+			}
+			return g.emitExpr(inner) + sep + sel.Sel + "(" + g.emitCallArgs(c) + ")"
 		}
 		return g.emitExpr(sel.X) + "." + sel.Sel + "(" + g.emitCallArgs(c) + ")"
 	}
@@ -2612,20 +2750,35 @@ func (g *Generator) emitComposite(c *ast.CompositeLit) string {
 		if len(g.implementsOf(t.Name)) > 0 {
 			return g.emitCtorCall(t.Name, c.Elts)
 		}
-		var elts []string
+		// aggregate: designated initialisers must follow declaration order
+		provided := map[string]string{}
+		var positional []string
 		for _, e := range c.Elts {
 			if kv, ok := e.(*ast.KeyValueExpr); ok {
-				if name, ok := kv.Key.(*ast.Ident); ok && !g.structNames[name.Name] {
-					elts = append(elts, "."+g.memberName(t.Name, name.Name)+" = "+g.emitExpr(kv.Value))
+				if id, ok := kv.Key.(*ast.Ident); ok && !g.structNames[id.Name] {
+					provided[id.Name] = g.emitExpr(kv.Value)
 					continue
 				}
 			}
-			elts = append(elts, g.emitExpr(e))
+			positional = append(positional, g.emitExpr(e))
 		}
-		if g.structNames[t.Name] || g.isTypeName(t.Name) {
+		if len(provided) > 0 {
+			var elts []string
+			for _, fname := range g.structFields[t.Name] {
+				if v, ok := provided[fname]; ok {
+					elts = append(elts, "."+g.memberName(t.Name, fname)+" = "+v)
+					delete(provided, fname)
+				}
+			}
+			for _, fname := range g.embeddedList(t.Name) {
+				if v, ok := provided[fname]; ok {
+					elts = append(elts, "."+g.memberName(t.Name, fname)+" = "+v)
+					delete(provided, fname)
+				}
+			}
 			return fmt.Sprintf("%s{ %s }", t.Name, strings.Join(elts, ", "))
 		}
-		return fmt.Sprintf("%s{ %s }", t.Name, strings.Join(elts, ", "))
+		return fmt.Sprintf("%s{ %s }", t.Name, strings.Join(positional, ", "))
 	case nil:
 		var elts []string
 		for _, e := range c.Elts {
@@ -2943,24 +3096,25 @@ template <typename T> std::string _to_str(T v) {
     return _o.str();
 }
 
-inline void _replace_first_spec(std::string& s, const std::string& val) {
+inline size_t _replace_first_spec(std::string& s, size_t from, const std::string& val) {
     size_t best = std::string::npos;
     std::string which;
     for (const char* spec : { "%v", "%d", "%s", "%f", "%q" }) {
-        size_t q = s.find(spec);
+        size_t q = s.find(spec, from);
         if (q != std::string::npos && (best == std::string::npos || q < best)) { best = q; which = spec; }
     }
-    if (best != std::string::npos) {
-        std::string rep = val;
-        if (which == "%q") rep = "\"" + val + "\"";
-        s.replace(best, 2, rep);
-    }
+    if (best == std::string::npos) return from;
+    std::string rep = val;
+    if (which == "%q") rep = "\"" + val + "\"";
+    s.replace(best, 2, rep);
+    return best + rep.size();
 }
 
 template <typename... Args>
 std::string fmtSprintf(const std::string& fmt, Args... args) {
     std::string out = fmt;
-    int _dummy[] = { 0, (_replace_first_spec(out, _to_str(args)), 0)... };
+    size_t _off = 0;
+    int _dummy[] = { 0, (_off = _replace_first_spec(out, _off, _to_str(args)), 0)... };
     (void)_dummy;
     return out;
 }

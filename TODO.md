@@ -6,6 +6,8 @@
 - [x] `chan` / `go` / `select` (runtime: `channel<T>`, `go()`, try-based select)
 - [x] `interface{}` with type assertions and type switches
 - [x] Named `interface` dispatch (abstract base classes + virtual methods)
-- [ ] Cross-package `import` resolution
-- [ ] Stdlib primitives for the core (unicode, utf8, fmt, strings)
-- [ ] Self-compile the whole core (ast/lexer/parser/codegen) end to end
+- [x] Cross-package `import` resolution (single TU, namespace per package)
+- [x] Stdlib primitives for the core (unicode, utf8, fmt, strings)
+- [x] Self-compile the whole core (ast/lexer/parser/codegen) end to end
+      - `scripts/selfcompile.sh`: the core transpiles to one C++ TU, builds, and
+        its output is byte-identical to the Go-built go2cpp on every testcase

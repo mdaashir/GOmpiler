@@ -37,6 +37,20 @@ Test the front-end:
 
     go test ./pkg/...
 
+## Self-compilation
+
+`pkg/selfhost` is a core-only entry point (it depends on nothing outside
+`pkg/lexer`, `pkg/parser`, `pkg/codegen`). `scripts/selfcompile.sh` uses it to
+transpile go2cpp's own core into a single C++ translation unit, builds that with
+`g++`, and checks that the resulting native binary emits **byte-identical** C++
+to the Go-built go2cpp for every testcase:
+
+    ./scripts/selfcompile.sh
+
+```
+==== self-compilation: 51 identical, 0 different, 0 failed ====
+```
+
 ## Known issues
 
 * Only works with simple code samples, for now.

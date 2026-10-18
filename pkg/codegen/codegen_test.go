@@ -57,8 +57,8 @@ func main() { y, z := addsub(4); _ = y; _ = z }
 	if !strings.Contains(out, "auto addsub(int x) -> std::tuple<int, int>") {
 		t.Errorf("expected a tuple return type, got:\n%s", out)
 	}
-	if !strings.Contains(out, "auto [y, z] = addsub(4);") {
-		t.Errorf("expected structured binding, got:\n%s", out)
+	if !strings.Contains(out, "std::get<0>(_ret") || !strings.Contains(out, "std::get<1>(_ret") {
+		t.Errorf("expected tuple destructuring, got:\n%s", out)
 	}
 }
 
