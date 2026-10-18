@@ -1,6 +1,0 @@
-Type: PREPROCESSOR Value: #include
-Type: OPERATOR     Value: <
-Type: IDENTIFIER   Value: stdio
-Type: DOT          Value: .
-Type: IDENTIFIER   Value: h
-Type: OPERATOR     Value: >
