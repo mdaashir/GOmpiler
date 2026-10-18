@@ -24,7 +24,7 @@ func (b *strBuilder) WriteString(x string) {
 	b.s += x
 }
 
-func (b *strBuilder) WriteByte(c byte) {
+func (b *strBuilder) WriteChar(c byte) {
 	b.s += string(c)
 }
 
@@ -2335,7 +2335,7 @@ func (g *Generator) emitLit(l *ast.BasicLit) string {
 // content (including `R"(`) is safe.
 func cppQuote(s string) string {
 	var b strBuilder
-	b.WriteByte('"')
+	b.WriteChar('"')
 	for i := 0; i < len(s); i++ {
 		switch s[i] {
 		case '\\':
@@ -2349,10 +2349,10 @@ func cppQuote(s string) string {
 		case '\r':
 			b.WriteString("\\r")
 		default:
-			b.WriteByte(s[i])
+			b.WriteChar(s[i])
 		}
 	}
-	b.WriteByte('"')
+	b.WriteChar('"')
 	return b.String()
 }
 
