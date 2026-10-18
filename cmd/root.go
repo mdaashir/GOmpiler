@@ -12,6 +12,11 @@ var (
 	optimize   bool
 )
 
+// version is stamped at build time by the release workflow:
+//
+//	-ldflags "-X github.com/mdaashir/GOmpiler/cmd.version=v1.2.3"
+var version = "dev"
+
 var rootCmd = &cobra.Command{
 	Use:   "gompiler [source files]",
 	Short: "A C++ compiler written in Go",
@@ -33,6 +38,7 @@ func Execute() error {
 }
 
 func init() {
+	rootCmd.Version = version
 	rootCmd.Flags().StringVarP(&outputFile, "output", "o", "a.out", "Output file name")
 	rootCmd.Flags().BoolVarP(&optimize, "optimize", "O", false, "Enable constant folding")
 }
