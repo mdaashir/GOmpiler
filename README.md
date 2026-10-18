@@ -21,21 +21,32 @@ source.go
 
 | Path | Purpose |
 | --- | --- |
+| `cmd/go2cpp` | Command-line driver (`-S`, `-o`; file or directory input). |
 | `pkg/lexer` | Turns Go source text into a token stream. |
 | `pkg/ast` | Syntax-tree node definitions shared by every later stage. |
 | `pkg/parser` | Hand-written recursive-descent parser producing an `ast.File`. |
 | `pkg/codegen` | Lowers the AST to C++20 (runtime helpers, `cout` lowering, etc.). |
-| `cmd/go2cpp` | Command-line driver. |
+| `pkg/selfhost` | Core-only entry point used by the self-compilation check. |
+| `testdata/` | Sample Go programs used by the tests. |
+| `scripts/` | `difftest.sh` and `selfcompile.sh` verification scripts. |
+
+`testdata/` is the Go convention for test fixtures: the toolchain ignores it, so
+`go build ./...` and `go vet ./...` stay clean even though each fixture is a
+standalone `package main`.
 
 Build and run:
 
-    go build -o go2cpp ./cmd/go2cpp
+    make build                  # -> ./go2cpp
     ./go2cpp -S program.go      # print the generated C++20
     ./go2cpp -o program program.go
 
-Test the front-end:
+Common `make` targets:
 
-    go test ./pkg/...
+    make test        # go test ./...
+    make vet         # go vet ./...
+    make difftest    # `go run` output vs compiled C++ output (needs g++)
+    make selfcompile # self-compilation check (needs g++)
+    make clean
 
 ## Self-compilation
 
@@ -54,8 +65,10 @@ to the Go-built go2cpp for every testcase:
 ## Known issues
 
 * Only works with simple code samples, for now.
-* Very few functions from the Go standard library are implemented. The ideal would be to be able to compile the official Go standard library.
-* A good plan for how to implement `import` is needed.
+* Only a subset of the Go standard library is implemented. The ideal would be to
+  be able to compile the official Go standard library.
+* Local (`import "github.com/.../pkg/x"`) imports are resolved; the standard
+  library is provided by the runtime helpers rather than by transpilation.
 
 ## Features and limitations
 

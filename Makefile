@@ -1,12 +1,31 @@
-# The main purpose of this Makefile is to make Travis CI
-# NOT build the testcase/*.go files.
+# go2cpp — build, test and verification targets.
 
-.PHONY: clean test
+GO  ?= go
+CXX ?= g++
 
-SRC := $(wildcard *.go)
+.PHONY: all build test vet difftest selfcompile clean
 
-all: $(SRC)
-	go build && go test
+all: build test
+
+# Build the command-line compiler into ./go2cpp.
+build:
+	$(GO) build -o go2cpp ./cmd/go2cpp
+
+test:
+	$(GO) test ./...
+
+vet:
+	$(GO) vet ./...
+
+# Differential test: compare `go run` output with the compiled C++ output of the
+# same program, for every program in testdata/. Requires $(CXX).
+difftest:
+	./scripts/difftest.sh
+
+# Self-compilation check: transpile go2cpp's own core to C++, rebuild it, and
+# verify it produces identical output. Requires $(CXX).
+selfcompile:
+	./scripts/selfcompile.sh
 
 clean:
-	rm -f go2cpp
+	rm -rf go2cpp build

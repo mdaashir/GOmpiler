@@ -149,7 +149,7 @@ func main() {
 
 // TestGenerateAllTestcases ensures every existing testcase lowers without error.
 func TestGenerateAllTestcases(t *testing.T) {
-	files, err := filepath.Glob(filepath.Join("..", "..", "testcases", "*.go"))
+	files, err := filepath.Glob(filepath.Join("..", "..", "testdata", "*.go"))
 	if err != nil || len(files) == 0 {
 		t.Fatalf("no testcases found: %v", err)
 	}

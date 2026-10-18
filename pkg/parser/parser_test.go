@@ -50,7 +50,7 @@ func main() {
 // TestParseAllTestcases parses every file in testcases/ and reports the first
 // error per file. This is the parser's main regression signal.
 func TestParseAllTestcases(t *testing.T) {
-	files, err := filepath.Glob(filepath.Join("..", "..", "testcases", "*.go"))
+	files, err := filepath.Glob(filepath.Join("..", "..", "testdata", "*.go"))
 	if err != nil || len(files) == 0 {
 		t.Fatalf("no testcases found: %v", err)
 	}

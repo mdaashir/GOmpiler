@@ -42,7 +42,7 @@ echo "== comparing output: go-built vs self-compiled core =="
 same=0
 diffn=0
 failed=0
-for f in testcases/*.go; do
+for f in testdata/*.go; do
   if ! "$TMP/go2cpp" -S "$f" > "$TMP/from_go.cpp" 2>/dev/null; then
     failed=$((failed + 1)); echo "  FAIL(go): $f"; continue
   fi

@@ -2,17 +2,20 @@
 #
 # Differential test for the AST front-end.
 #
-# For every program in testcases/, this compares the output of `go run` with the
+# For every program in testdata/, this compares the output of `go run` with the
 # output of the binary produced by compiling go2cpp's generated C++20.
 #
 # Requirements: go, a C++20 compiler (g++), bash. Run from anywhere.
 set -u
 
 cd "$(dirname "$0")/.."
-ROOT=$(pwd)
+GO="${GO:-go}"
 CXX="${CXX:-g++}"
 
-go build -o go2cpp ./cmd/go2cpp || exit 1
+tmp=$(mktemp -d)
+trap 'rm -rf "$tmp"' EXIT
+
+"$GO" build -o "$tmp/go2cpp" ./cmd/go2cpp || exit 1
 
 tests=(
   multiline_string var_string var_multi string_args defer iota map_struct
@@ -28,23 +31,20 @@ tests=(
 # Programs whose output word order is unspecified (map iteration order).
 unordered=(string_map for_range_map_key_value for_range_map_value for_range_map_key)
 
-tmp=$(mktemp -d)
-trap 'rm -rf "$tmp"' EXIT
-
 pass=0
 fail=0
 failed=()
 
 for t in "${tests[@]}"; do
-  src="testcases/$t.go"
-  if ! ./go2cpp -S -o "$tmp/$t.cpp" "$src" 2>"$tmp/err"; then
+  src="testdata/$t.go"
+  if ! "$tmp/go2cpp" -S -o "$tmp/$t.cpp" "$src" 2>"$tmp/err"; then
     echo "TRANSPILE FAIL: $t"; head -5 "$tmp/err"; fail=$((fail+1)); failed+=("$t"); continue
   fi
   if ! "$CXX" -std=c++2a -O2 -fpermissive -Wfatal-errors -pthread -o "$tmp/$t" "$tmp/$t.cpp" 2>"$tmp/err"; then
     echo "COMPILE FAIL: $t"; head -5 "$tmp/err"; fail=$((fail+1)); failed+=("$t"); continue
   fi
 
-  goout=$(go run "$src" 2>&1)
+  goout=$("$GO" run "$src" 2>&1)
   cppout=$("$tmp/$t" 2>&1)
 
   if [[ " ${unordered[*]} " == *" $t "* ]]; then
