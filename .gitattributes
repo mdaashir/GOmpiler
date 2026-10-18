@@ -1,0 +1,13 @@
+# Store text files with LF line endings and check them out with LF everywhere.
+#
+# Windows checkouts would otherwise convert shell scripts to CRLF (via
+# core.autocrlf), which breaks their shebang under WSL/Linux/Git-Bash
+# ("/usr/bin/env: 'bash\r': No such file or directory").
+* text=auto eol=lf
+
+# Explicitly keep these LF even if a local config disagrees.
+*.sh      text eol=lf
+Makefile  text eol=lf
+*.go      text eol=lf
+*.md      text eol=lf
+*.yml     text eol=lf
