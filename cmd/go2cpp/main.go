@@ -20,10 +20,21 @@ import (
 	"github.com/mdaashir/go2cpp/pkg/parser"
 )
 
+// version is stamped at build time by the release workflow:
+//
+//	-ldflags "-X main.version=v1.2.3"
+var version = "dev"
+
 func main() {
+	showVersion := flag.Bool("version", false, "print version and exit")
 	out := flag.String("o", "", "output file (default a.out)")
 	printOnly := flag.Bool("S", false, "print the generated C++ to stdout and exit")
 	flag.Parse()
+
+	if *showVersion {
+		fmt.Println("go2cpp version", version)
+		return
+	}
 
 	args := flag.Args()
 	if len(args) < 1 {

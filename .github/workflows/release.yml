@@ -1,0 +1,78 @@
+name: Release
+
+# Publishing a tag like v1.2.3 builds binaries for every supported platform,
+# generates a changelog, and creates a GitHub Release.
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0 # full history, so the changelog can diff against the previous tag
+
+      - uses: actions/setup-go@v7
+        with:
+          go-version: "1.24"
+          cache: false
+
+      - name: Unit tests
+        run: go test ./...
+
+      # The generated C++ is only as good as its behaviour; gate the release on
+      # the differential suite (needs g++, present on the runner).
+      - name: Differential tests
+        run: bash scripts/difftest.sh
+
+      - name: Build binaries
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          for target in linux/amd64 linux/arm64 darwin/amd64 darwin/arm64 windows/amd64; do
+            os="${target%/*}"
+            arch="${target#*/}"
+            out="dist/go2cpp_${os}_${arch}"
+            if [ "$os" = "windows" ]; then out="${out}.exe"; fi
+            GOOS="$os" GOARCH="$arch" CGO_ENABLED=0 \
+              go build -trimpath \
+                -ldflags "-s -w -X main.version=${GITHUB_REF_NAME}" \
+                -o "$out" ./cmd/go2cpp
+          done
+          (cd dist && sha256sum ./* > checksums.txt)
+          ls -l dist
+
+      - name: Build changelog
+        run: |
+          set -euo pipefail
+          repo="${GITHUB_REPOSITORY}"
+          prev="$(git describe --tags --abbrev=0 --match 'v*' "${GITHUB_REF_NAME}^" 2>/dev/null || true)"
+          {
+            if [ -n "$prev" ]; then
+              echo "## Commits"
+              echo
+              git log --no-merges \
+                --pretty=format:"- %s ([\`%h\`](https://github.com/${repo}/commit/%H))" \
+                "${prev}..${GITHUB_REF_NAME}"
+              echo
+              echo
+              echo "**Full changelog**: https://github.com/${repo}/compare/${prev}...${GITHUB_REF_NAME}"
+            else
+              echo "Initial release."
+            fi
+          } > CHANGELOG_BODY.md
+          cat CHANGELOG_BODY.md
+
+      - name: Create release
+        uses: softprops/action-gh-release@v2
+        with:
+          body_path: CHANGELOG_BODY.md
+          generate_release_notes: true
+          files: dist/*
+          fail_on_unmatched_files: true
