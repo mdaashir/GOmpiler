@@ -3,7 +3,7 @@ package cmd
 import (
 	"fmt"
 
-	"github.com/mdaashir/GOmpiler-2/pkg/compiler"
+	"github.com/mdaashir/GOmpiler/pkg/compiler"
 	"github.com/spf13/cobra"
 )
 

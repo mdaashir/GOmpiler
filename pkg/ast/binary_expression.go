@@ -1,7 +1,7 @@
 package ast
 
 import (
-	"github.com/mdaashir/GOmpiler-2/pkg/lexer"
+	"github.com/mdaashir/GOmpiler/pkg/lexer"
 )
 
 // BinaryExpression represents a binary expression with an operator

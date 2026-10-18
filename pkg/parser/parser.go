@@ -4,8 +4,8 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/mdaashir/GOmpiler-2/pkg/ast"
-	"github.com/mdaashir/GOmpiler-2/pkg/lexer"
+	"github.com/mdaashir/GOmpiler/pkg/ast"
+	"github.com/mdaashir/GOmpiler/pkg/lexer"
 )
 
 // Operator precedence levels, lowest to highest.

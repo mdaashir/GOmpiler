@@ -4,8 +4,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/mdaashir/GOmpiler-2/pkg/ast"
-	"github.com/mdaashir/GOmpiler-2/pkg/lexer"
+	"github.com/mdaashir/GOmpiler/pkg/ast"
+	"github.com/mdaashir/GOmpiler/pkg/lexer"
 )
 
 func mustParse(t *testing.T, src string) *ast.Program {

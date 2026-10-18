@@ -4,8 +4,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/mdaashir/GOmpiler-2/pkg/lexer"
-	"github.com/mdaashir/GOmpiler-2/pkg/parser"
+	"github.com/mdaashir/GOmpiler/pkg/lexer"
+	"github.com/mdaashir/GOmpiler/pkg/parser"
 )
 
 func analyze(t *testing.T, src string) error {

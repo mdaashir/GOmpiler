@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/mdaashir/GOmpiler-2/pkg/ast"
+	"github.com/mdaashir/GOmpiler/pkg/ast"
 )
 
 // Analyzer performs semantic analysis on the AST.

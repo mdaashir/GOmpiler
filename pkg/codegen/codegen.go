@@ -5,7 +5,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/mdaashir/GOmpiler-2/pkg/ast"
+	"github.com/mdaashir/GOmpiler/pkg/ast"
 )
 
 // Generator lowers an AST to x86-64 assembly (GNU as, AT&T syntax).

@@ -7,10 +7,10 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/mdaashir/GOmpiler-2/pkg/codegen"
-	"github.com/mdaashir/GOmpiler-2/pkg/lexer"
-	"github.com/mdaashir/GOmpiler-2/pkg/parser"
-	"github.com/mdaashir/GOmpiler-2/pkg/semantic"
+	"github.com/mdaashir/GOmpiler/pkg/codegen"
+	"github.com/mdaashir/GOmpiler/pkg/lexer"
+	"github.com/mdaashir/GOmpiler/pkg/parser"
+	"github.com/mdaashir/GOmpiler/pkg/semantic"
 )
 
 // CompileFile compiles a single C++ source file into an executable.

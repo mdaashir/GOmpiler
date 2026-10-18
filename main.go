@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/mdaashir/GOmpiler-2/cmd"
+	"github.com/mdaashir/GOmpiler/cmd"
 )
 
 func main() {
