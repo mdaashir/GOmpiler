@@ -24,7 +24,7 @@ jobs:
         run: go test ./...
 
       - name: Differential tests
-        run: ./scripts/difftest.sh
+        run: bash scripts/difftest.sh
 
       - name: Self-compilation
-        run: ./scripts/selfcompile.sh
+        run: bash scripts/selfcompile.sh
