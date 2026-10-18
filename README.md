@@ -6,11 +6,69 @@ One of the goals is for the compiler to be able to compile itself.
 
 The intended use is not to convert entire existing Go programs to C++, but to help port parts of it to C++, or perhaps write programs from scratch and continually check that the program can be converted and compiled as C++.
 
+## Architecture
+
+The compiler is built as a real pipeline rather than a set of regular
+expressions over source lines:
+
+```
+source.go
+   │  pkg/lexer    -> tokens (with Go's automatic semicolon insertion)
+   │  pkg/parser   -> AST (recursive descent + precedence climbing)
+   ▼  pkg/codegen  -> C++20
+      g++          -> native executable
+```
+
+| Path | Purpose |
+| --- | --- |
+| `cmd/go2cpp` | Command-line driver (`-S`, `-o`; file or directory input). |
+| `pkg/lexer` | Turns Go source text into a token stream. |
+| `pkg/ast` | Syntax-tree node definitions shared by every later stage. |
+| `pkg/parser` | Hand-written recursive-descent parser producing an `ast.File`. |
+| `pkg/codegen` | Lowers the AST to C++20 (runtime helpers, `cout` lowering, etc.). |
+| `pkg/selfhost` | Core-only entry point used by the self-compilation check. |
+| `testdata/` | Sample Go programs used by the tests. |
+| `scripts/` | `difftest.sh` and `selfcompile.sh` verification scripts. |
+
+`testdata/` is the Go convention for test fixtures: the toolchain ignores it, so
+`go build ./...` and `go vet ./...` stay clean even though each fixture is a
+standalone `package main`.
+
+Build and run:
+
+    make build                  # -> ./go2cpp
+    ./go2cpp -S program.go      # print the generated C++20
+    ./go2cpp -o program program.go
+
+Common `make` targets:
+
+    make test        # go test ./...
+    make vet         # go vet ./...
+    make difftest    # `go run` output vs compiled C++ output (needs g++)
+    make selfcompile # self-compilation check (needs g++)
+    make clean
+
+## Self-compilation
+
+`pkg/selfhost` is a core-only entry point (it depends on nothing outside
+`pkg/lexer`, `pkg/parser`, `pkg/codegen`). `scripts/selfcompile.sh` uses it to
+transpile go2cpp's own core into a single C++ translation unit, builds that with
+`g++`, and checks that the resulting native binary emits **byte-identical** C++
+to the Go-built go2cpp for every testcase:
+
+    ./scripts/selfcompile.sh
+
+```
+==== self-compilation: 51 identical, 0 different, 0 failed ====
+```
+
 ## Known issues
 
 * Only works with simple code samples, for now.
-* Very few functions from the Go standard library are implemented. The ideal would be to be able to compile the official Go standard library.
-* A good plan for how to implement `import` is needed.
+* Only a subset of the Go standard library is implemented. The ideal would be to
+  be able to compile the official Go standard library.
+* Local (`import "github.com/.../pkg/x"`) imports are resolved; the standard
+  library is provided by the runtime helpers rather than by transpilation.
 
 ## Features and limitations
 
@@ -160,13 +218,13 @@ auto main() -> int
 ## Syntactic elements
 
 - [x] backtick quoted strings: <code>`</code> (one level deep only)
-- [ ] `iota`
+- [x] `iota`
 
 ## Keywords
 
 - [x] `break`
 - [x] `case`
-- [ ] `chan`
+- [x] `chan` (buffered and unbuffered)
 - [x] `const`
 - [x] `continue`
 - [x] `default`
@@ -175,16 +233,16 @@ auto main() -> int
 - [x] `fallthrough`
 - [x] `for`
 - [x] `func`
-- [ ] `go`
+- [x] `go` (runs on `std::thread`)
 - [x] `goto`
 - [x] `if`
 - [x] `import` (partially)
-- [ ] `interface`
+- [x] `interface` (empty `interface{}` via `go2cpp::any`; method-bearing interfaces are not dynamically dispatched yet)
 - [x] `map` (needs more testing)
 - [x] `package` (partially)
 - [x] `range`
 - [x] `return`
-- [ ] `select`
+- [x] `select` (try-based scheduling over channels)
 - [x] `struct` (needs more testing)
 - [x] `switch`
 - [x] `type` (needs more testing)
@@ -194,17 +252,17 @@ auto main() -> int
 
 - [x] `fmt.Println`
 - [x] `fmt.Print`
-- [ ] `fmt.Printf` (partially)
-- [ ] `fmt.Sprintf`
+- [x] `fmt.Printf` (partial: `%s`, `%v`, `%d`, `%f`)
+- [x] `fmt.Sprintf`
 - [x] `strings.Contains`
 - [x] `strings.HasPrefix`
-- [ ] `strings.HasSuffix`
-- [ ] `strings.Index`
-- [ ] `strings.Join`
+- [x] `strings.HasSuffix`
+- [x] `strings.Index`
+- [x] `strings.Join`
 - [ ] `strings.NewReader`
-- [ ] `strings.Replace`
-- [ ] `strings.Split`
-- [ ] `strings.SplitN`
+- [x] `strings.Replace`
+- [x] `strings.Split`
+- [x] `strings.SplitN`
 - [x] `strings.TrimSpace`
 - [ ] All the rest
 

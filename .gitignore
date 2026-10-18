@@ -1,10 +1,19 @@
-*.bak
+# Build output
+/go2cpp
+/go2cpp.exe
+/build/
 *.o
+*.out
+a.out
+
+# Scratch directories
+.buildtmp/
+.commandcode/
+
+# Editors and OS
+.idea/
+.vscode/
 *.swp
+*.bak
 *.tmp
-go2cpp
-include.txt
-main
-main.cpp
-output.cpp
-.idea
+.DS_Store
