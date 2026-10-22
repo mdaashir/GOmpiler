@@ -1,0 +1,22 @@
+{
+	"name": "GOmpiler",
+	"brand": "GOmpiler",
+	"url": "https://mdaashir.github.io/GOmpiler",
+	"title": "{name} — compilers for C++ and Go",
+	"description": "A C++ compiler written in Go and a Go→C++20 transpiler — two independent toolchains in one repository.",
+	"notFound": {
+		"title": "Page not found — {name}",
+		"description": "The page you were looking for could not be found."
+	},
+	"themeColor": "#000000",
+	"theme": { "default": "dark" },
+	"favicon": "/favicon.ico",
+	"ui": {
+		"emptyFolder": "This folder is empty.",
+		"noFileSelected": "No file selected.",
+		"noImageSelected": "No image selected.",
+		"notFoundHeading": "Page not found",
+		"notFoundBody": "That route doesn't exist in this documentation.",
+		"notFoundBack": "Back to the docs"
+	}
+}

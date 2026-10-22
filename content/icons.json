@@ -1,0 +1,43 @@
+{
+	"apps": {
+		"finder": "/images/finder.png",
+		"safari": "/images/safari.png",
+		"photos": "/images/photos.png",
+		"contacts": "/images/contact.png",
+		"terminal": "/images/terminal.png",
+		"trash": "/images/trash.png",
+		"gompiler": "/images/apps/gompiler.svg",
+		"go2cpp": "/images/apps/go2cpp.svg",
+		"downloads": "/images/apps/downloads.svg",
+		"usage": "/images/apps/usage.svg"
+	},
+	"files": {
+		"folder": "/images/folder.png",
+		"txt": "/images/txt.png",
+		"image": "/images/image.png",
+		"pdf": "/images/pdf.png",
+		"plain": "/images/plain.png",
+		"figma": "/images/figma.png"
+	},
+	"brand": {
+		"logo": "/images/logo.svg"
+	},
+	"menubar": {
+		"wifi": "wifi",
+		"search": "search",
+		"user": "user",
+		"mode": "moon"
+	},
+	"sidebar": {
+		"work": "folder",
+		"info": "info",
+		"file": "file",
+		"trash": "trash"
+	},
+	"social": {
+		"github": "github",
+		"x": "x",
+		"linkedin": "/icons/linkedin.svg",
+		"email": "gmail"
+	}
+}

@@ -1,0 +1,15 @@
+{
+	"enabled": true,
+	"title": "GOmpiler Documentation",
+	"name": "Docs",
+	"subtitle": "C++ to native, and Go to C++ — two independent toolchains.",
+	"repo": "https://github.com/mdaashir/GOmpiler",
+	"sidebarHeading": "Documentation",
+	"sections": [
+		{ "id": "overview", "title": "Overview", "file": "README.md", "icon": "sidebar.file" },
+		{ "id": "gompiler", "title": "GOmpiler", "file": "gompiler.md", "icon": "sidebar.work" },
+		{ "id": "go2cpp", "title": "go2cpp", "file": "go2cpp.md", "icon": "sidebar.work" },
+		{ "id": "downloads", "title": "Downloads", "file": "downloads.md", "icon": "sidebar.info" },
+		{ "id": "usage", "title": "Usage", "file": "usage.md", "icon": "sidebar.info" }
+	]
+}

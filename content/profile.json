@@ -1,0 +1,13 @@
+{
+	"name": "GOmpiler",
+	"greeting": "Write C++ or Go,",
+	"headline": "ship native.",
+	"avatar": "/images/adrian.jpg",
+	"about": {
+		"enabled": false,
+		"location": { "name": "About", "icon": "sidebar.info" },
+		"title": "About this project",
+		"lines": [],
+		"photos": []
+	}
+}

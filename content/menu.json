@@ -1,0 +1,10 @@
+{
+	"links": [],
+	"statusIcons": [
+		{ "icon": "menubar.wifi", "label": "Wi-Fi" },
+		{ "icon": "menubar.user", "label": "Account" }
+	],
+	"appearanceToggle": { "icon": "menubar.mode", "label": "Toggle appearance" },
+	"closeAllLabel": "Close all windows",
+	"dock": []
+}

@@ -1,0 +1,17 @@
+{
+	"contextMenu": [
+		{ "label": "Get Info", "action": "info" },
+		{ "separator": true },
+		{ "label": "Change Wallpaper", "disabled": true }
+	],
+	"info": {
+		"name": "Desktop.txt",
+		"subtitle": "Project documentation",
+		"lines": [
+			"Choose a section from the sidebar to read the documentation.",
+			"Press ⌘ and click a section name to open it in a new tab."
+		]
+	},
+	"iconContextMenu": [{ "label": "Get Info", "action": "info" }],
+	"dockContextMenu": [{ "label": "Open", "action": "open" }]
+}
